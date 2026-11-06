@@ -11,6 +11,12 @@ except ImportError:
 
 DEFAULT_OLD_REPO = os.getenv("OLD_REPO_PATH", r"tu ruta")
 DEFAULT_NEW_REPO = os.getenv("NEW_REPO_PATH", r"tu ruta")
+
+# Fallback automático a volúmenes montados dentro de Docker
+if not os.path.exists(DEFAULT_OLD_REPO) and os.path.exists("/repos/old"):
+    DEFAULT_OLD_REPO = "/repos/old"
+if not os.path.exists(DEFAULT_NEW_REPO) and os.path.exists("/repos/new"):
+    DEFAULT_NEW_REPO = "/repos/new"
 # Fallbacks genéricos para credenciales y host
 _GENERIC_HOST = os.getenv("HOST", "10.0.0.16")
 _GENERIC_USER = os.getenv("USER", "")

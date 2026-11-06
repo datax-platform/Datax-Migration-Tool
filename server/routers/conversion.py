@@ -3,6 +3,7 @@ import os
 import sqlite3
 import shutil
 import base64
+import math
 import pandas as pd
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
@@ -606,17 +607,34 @@ def get_sqlite(code: str, limit: int = 100):
         
         conn.close()
 
-        df = df.where(pd.notnull(df), None)
+        def sanitize_records(df_in: pd.DataFrame) -> list:
+            if df_in is None or df_in.empty:
+                return []
+            recs = df_in.to_dict(orient="records")
+            clean = []
+            for r in recs:
+                cr = {}
+                for k, v in r.items():
+                    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                        cr[k] = None
+                    elif pd.isna(v):
+                        cr[k] = None
+                    else:
+                        cr[k] = v
+                clean.append(cr)
+            return clean
 
         potential_hierarchy = [
             c for c in list(df.columns)
             if not (c.lower() in ("valor", "file", "fecha") or c.lower().startswith(("titulo", "id_")))
         ]
 
+        clean_data = sanitize_records(df)
+
         return {
             "success": True,
             "columns": list(df.columns),
-            "data": df.to_dict(orient="records"),
+            "data": clean_data,
             "total": total_count,
             "path": sqlite_file,
             "table": target_table,
@@ -647,7 +665,19 @@ def query_replacements(query: ReplacementQuery):
             s = query.search.lower()
             mask = df.astype(str).apply(lambda row: row.str.lower().str.contains(s).any(), axis=1)
             df = df[mask]
-        rows = df.to_dict(orient="records")
+        
+        recs = df.to_dict(orient="records")
+        rows = []
+        for r in recs:
+            cr = {}
+            for k, v in r.items():
+                if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                    cr[k] = None
+                elif pd.isna(v):
+                    cr[k] = None
+                else:
+                    cr[k] = v
+            rows.append(cr)
         columns = list(df.columns)
     else:
         rows = []

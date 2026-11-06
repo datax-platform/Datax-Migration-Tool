@@ -638,6 +638,115 @@ export function ConversionView({ externalLogs = [] }) {
     }
   };
 
+  const formatToTitleCase = (text) => {
+    if (!text) return "";
+
+    const ACRONYMS = new Set([
+      "MN", "ME", "MV", "UFV", "USD", "BOB", "BS", "BS.", "BCB", "ASFI", "DPF",
+      "ATM", "POS", "NIT", "CI", "IVA", "IT", "SA", "S.A.", "SRL", "S.R.L.",
+      "PDS", "PIB", "IPC", "IDH", "TCO", "B.C.B.", "BNB", "BISA"
+    ]);
+
+    const ROMAN_NUMS = new Set([
+      "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV"
+    ]);
+
+    const MINOR_WORDS = new Set([
+      "de", "del", "la", "las", "los", "el", "en", "y", "o", "u", "a", "al",
+      "con", "por", "para", "sin", "sobre"
+    ]);
+
+    // Segmentar preservando delimitadores principales: / - – | : ,
+    const segments = String(text).split(/(\s*[\/\|–\-]\s*|\s*:\s*|\s*,\s*)/);
+
+    const output = [];
+    for (const seg of segments) {
+      const segStrip = seg.trim();
+      if (segStrip === "/" || segStrip === "|" || segStrip === "-" || segStrip === "–") {
+        output.push(` ${segStrip} `);
+        continue;
+      } else if (segStrip === ":") {
+        output.push(": ");
+        continue;
+      } else if (segStrip === ",") {
+        output.push(", ");
+        continue;
+      }
+
+      const words = seg.trim().split(/\s+/).filter(Boolean);
+      const cleanedWords = [];
+
+      for (let idx = 0; idx < words.length; idx++) {
+        const w = words[idx];
+        const match = w.match(/^([(\[{<"']*)(.*?)([)\]}>"',.:;]*)$/);
+        if (!match) {
+          cleanedWords.push(w);
+          continue;
+        }
+
+        const pre = match[1];
+        const core = match[2];
+        const post = match[3];
+
+        if (!core) {
+          cleanedWords.push(w);
+          continue;
+        }
+
+        const upperC = core.toUpperCase();
+        const lowerC = core.toLowerCase();
+
+        // 1. Códigos numéricos o cuentas (110.01, 100)
+        if (/^\d+(\.\d+)*$/.test(core)) {
+          cleanedWords.push(pre + core + post);
+        }
+        // 2. Acrónimos y siglas financieras (USD, MN, BCB, etc.)
+        else if (ACRONYMS.has(upperC) || ACRONYMS.has(w.toUpperCase())) {
+          cleanedWords.push(pre + upperC + post);
+        }
+        // 3. Numerales Romanos (VIII, IX, etc.)
+        else if (ROMAN_NUMS.has(upperC)) {
+          cleanedWords.push(pre + upperC + post);
+        }
+        // 4. Conectores en minúscula (salvo primer token del segmento)
+        else if (idx > 0 && MINOR_WORDS.has(lowerC)) {
+          cleanedWords.push(pre + lowerC + post);
+        }
+        // 5. Palabra estándar a Capitalize
+        else {
+          const capitalized = core.charAt(0).toUpperCase() + core.slice(1).toLowerCase();
+          cleanedWords.push(pre + capitalized + post);
+        }
+      }
+
+      output.push(cleanedWords.join(" "));
+    }
+
+    return output.join("").replace(/\s{2,}/g, " ").trim();
+  };
+
+  const handleAutoFormatRow = (index) => {
+    setReplacements((prev) => {
+      const updated = [...prev];
+      const targetText = updated[index].final_value || updated[index].original_value || "";
+      const formatted = formatToTitleCase(targetText);
+      updated[index] = { ...updated[index], final_value: formatted };
+      return updated;
+    });
+  };
+
+  const handleAutoFormatAllToTitleCase = () => {
+    setReplacements((prev) =>
+      prev.map((r) => {
+        const targetText = r.final_value || r.original_value || "";
+        return {
+          ...r,
+          final_value: formatToTitleCase(targetText),
+        };
+      })
+    );
+  };
+
   const handleUpdateReplacementRow = (index, field, value) => {
     setReplacements((prev) => {
       const updated = [...prev];
@@ -1648,6 +1757,15 @@ export function ConversionView({ externalLogs = [] }) {
                       <RefreshCw className="w-3.5 h-3.5" />
                     </button>
                     <button
+                      onClick={handleAutoFormatAllToTitleCase}
+                      disabled={replacements.length === 0}
+                      className="hp-btn hp-btn-outline-ink text-xs h-8 px-3 gap-1.5 hover:border-amber-400 hover:text-amber-800"
+                      title="Normalizar y corregir todos los valores a Title Case limpio (resuelve mayúsculas mezcladas como ARANI y arregla espacios en /)"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                      <span>Auto Title Case</span>
+                    </button>
+                    <button
                       onClick={handleSaveAllReplacements}
                       disabled={savingReplacements || modifiedRowsCount === 0}
                       className={`hp-btn text-xs h-8 px-4 transition-all ${
@@ -1672,16 +1790,32 @@ export function ConversionView({ externalLogs = [] }) {
                       type="text"
                       placeholder="Valor Original (ej: CARTERA VIGENTE)"
                       value={newOrigVal}
-                      onChange={(e) => setNewOrigVal(e.target.value)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setNewOrigVal(val);
+                        if (!newFinalVal || newFinalVal === formatToTitleCase(newOrigVal)) {
+                          setNewFinalVal(formatToTitleCase(val));
+                        }
+                      }}
                       className="flex-1 w-full px-3 py-1.5 text-xs border border-[#c2c2c2] rounded-[4px] bg-white outline-none focus:border-[#024ad8]"
                     />
-                    <input
-                      type="text"
-                      placeholder="Valor Final Normalizado (ej: Cartera Vigente)"
-                      value={newFinalVal}
-                      onChange={(e) => setNewFinalVal(e.target.value)}
-                      className="flex-1 w-full px-3 py-1.5 text-xs border border-[#c2c2c2] rounded-[4px] bg-white outline-none focus:border-[#024ad8]"
-                    />
+                    <div className="relative flex-1 w-full flex items-center">
+                      <input
+                        type="text"
+                        placeholder="Valor Final Normalizado (ej: Cartera Vigente)"
+                        value={newFinalVal}
+                        onChange={(e) => setNewFinalVal(e.target.value)}
+                        className="w-full px-3 py-1.5 pr-8 text-xs border border-[#c2c2c2] rounded-[4px] bg-white outline-none focus:border-[#024ad8]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setNewFinalVal(formatToTitleCase(newOrigVal))}
+                        title="Auto-generar Title Case limpio desde el valor original"
+                        className="absolute right-1.5 p-1 text-slate-400 hover:text-amber-600 rounded transition-colors"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                     <button
                       onClick={handleInsertReplacement}
                       disabled={!newOrigVal.trim() || !newFinalVal.trim()}
@@ -1846,17 +1980,27 @@ export function ConversionView({ externalLogs = [] }) {
                               />
                             </td>
                             <td className="p-1.5">
-                              <input
-                                type="text"
-                                value={r.final_value || ""}
-                                onChange={(e) => handleUpdateReplacementRow(idx, "final_value", e.target.value)}
-                                className={`w-full px-2.5 py-1 text-xs font-mono font-bold text-[#024ad8] rounded-[3px] border transition-all outline-none ${
-                                  isModified && orig?.final_value !== r.final_value
-                                    ? "border-amber-400 bg-amber-50"
-                                    : "border-transparent hover:border-[#c2c2c2] focus:border-[#024ad8] focus:bg-white"
-                                }`}
-                                title="Haz clic para modificar el valor final normalizado"
-                              />
+                              <div className="relative flex items-center">
+                                <input
+                                  type="text"
+                                  value={r.final_value || ""}
+                                  onChange={(e) => handleUpdateReplacementRow(idx, "final_value", e.target.value)}
+                                  className={`w-full px-2.5 py-1 pr-7 text-xs font-mono font-bold text-[#024ad8] rounded-[3px] border transition-all outline-none ${
+                                    isModified && orig?.final_value !== r.final_value
+                                      ? "border-amber-400 bg-amber-50"
+                                      : "border-transparent hover:border-[#c2c2c2] focus:border-[#024ad8] focus:bg-white"
+                                  }`}
+                                  title="Haz clic para modificar el valor final normalizado"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleAutoFormatRow(idx)}
+                                  title="Convertir esta fila a Title Case limpio (ej: Cochabamba / Arani)"
+                                  className="absolute right-1 p-0.5 text-slate-300 hover:text-amber-600 hover:bg-amber-50 rounded transition-colors"
+                                >
+                                  <Sparkles className="w-3 h-3" />
+                                </button>
+                              </div>
                             </td>
                             <td className="p-2.5 text-center whitespace-nowrap">
                               {isModified ? (

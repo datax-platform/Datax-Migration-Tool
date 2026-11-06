@@ -1,4 +1,6 @@
 import os
+import math
+import pandas as pd
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -86,7 +88,18 @@ def inspect_sqlite(sqlite_file: str, report_code: str, use_heuristic: bool = Fal
     if "sample_df" in struct and struct["sample_df"] is not None:
         df = struct["sample_df"]
         sample_cols = list(df.columns)
-        sample_rows = df.head(30).to_dict(orient="records")
+        recs = df.head(30).to_dict(orient="records")
+        sample_rows = []
+        for r in recs:
+            cr = {}
+            for k, v in r.items():
+                if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                    cr[k] = None
+                elif pd.isna(v):
+                    cr[k] = None
+                else:
+                    cr[k] = v
+            sample_rows.append(cr)
         del struct["sample_df"]
 
     preview = generate_migration_preview_data(

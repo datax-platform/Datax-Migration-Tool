@@ -3,9 +3,18 @@ from sqlalchemy import create_engine
 import core.config as config
 
 def get_current_config():
+    old_repo = os.getenv("OLD_REPO_PATH", config.DEFAULT_OLD_REPO)
+    new_repo = os.getenv("NEW_REPO_PATH", config.DEFAULT_NEW_REPO)
+
+    # Si corre en contenedor Docker y la ruta de Windows no existe, usar el volumen montado
+    if not os.path.exists(old_repo) and os.path.exists("/repos/old"):
+        old_repo = "/repos/old"
+    if not os.path.exists(new_repo) and os.path.exists("/repos/new"):
+        new_repo = "/repos/new"
+
     return {
-        "old_repo": os.getenv("OLD_REPO_PATH", config.DEFAULT_OLD_REPO),
-        "new_repo": os.getenv("NEW_REPO_PATH", config.DEFAULT_NEW_REPO),
+        "old_repo": old_repo,
+        "new_repo": new_repo,
         "db_host": os.getenv("DB_HOST", config.DEFAULT_DB_HOST),
         "db_port": int(os.getenv("DB_PORT", config.DEFAULT_DB_PORT)),
         "db_user": os.getenv("DB_USER", config.DEFAULT_DB_USER),

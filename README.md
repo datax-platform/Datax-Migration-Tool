@@ -73,27 +73,49 @@ Plataforma unificada de migración, estandarización y generación autónoma de 
 
 ## ⚡ Cómo Ejecutar la Aplicación
 
-### Opción 1: Un Solo Clic (Recomendado en Windows)
-Haz doble clic sobre:
-E:\DATAX\Migracion React\run.bat
+### Opción 1: En Contenedor Docker (Unificado y Autónomo) 🐳
 
-### Opción 2: Desde PowerShell
+El proyecto cuenta con un contenedor Docker unificado (multi-stage) que compila el frontend (React + Vite) y levanta el backend (FastAPI + Playwright) en el puerto 8000:
+
+1. **Con un solo clic**: Haz doble clic en 
+un_docker.bat.
+2. **Desde terminal con Docker Compose**:
+   `ash
+   docker compose up -d --build
+   `
+3. **O construyendo manualmente la imagen**:
+   `ash
+   docker build -t datax-migration-studio .
+   docker run -d -p 8000:8000 --name datax-studio datax-migration-studio
+   `
+
+* **Acceso a la plataforma web unificada:** [http://localhost:8000](http://localhost:8000)
+* **Documentación interactiva Swagger:** [http://localhost:8000/docs](http://localhost:8000/docs)
+* **Logs del contenedor:** docker compose logs -f
+* **Detener contenedor:** docker compose down
+
+---
+
+### Opción 2: Un Solo Clic (Local en Windows)
+Haz doble clic sobre:
+
+un.bat
+
+### Opción 3: Desde PowerShell (Local)
 `powershell
-cd 'E:\DATAX\Migracion React'
 .\run.ps1
 `
 
-### Opción 3: Manualmente en Terminales Separadas
+### Opción 4: Manualmente en Terminales Separadas (Local)
 1. **Backend (Terminal 1)**:
    `ash
-   cd 'E:\DATAX\Migracion React'
    python run_backend.py
    `
    *Acceso a documentación interactiva Swagger:* http://localhost:8000/docs
 
 2. **Frontend (Terminal 2)**:
    `ash
-   cd 'E:\DATAX\Migracion React\frontend'
+   cd frontend
    npm run dev
    `
    *Aplicación Web:* http://localhost:5173

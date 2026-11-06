@@ -368,6 +368,76 @@ def normalize_srch_value(val: str) -> str:
     return re.sub(r"\s+", " ", val_clean).strip().lower()
 
 
+def format_to_title_case(val: str) -> str:
+    """Normaliza universalmente cualquier texto a Title Case inteligente, respetando delimitadores (/ - | : ,), siglas y números."""
+    if not val:
+        return ""
+
+    acronyms = {
+        "MN", "ME", "MV", "UFV", "USD", "BOB", "BS", "BS.", "BCB", "ASFI", "DPF",
+        "ATM", "POS", "NIT", "CI", "IVA", "IT", "SA", "S.A.", "SRL", "S.R.L.",
+        "PDS", "PIB", "IPC", "IDH", "TCO", "B.C.B.", "BNB", "BISA"
+    }
+    roman_nums = {"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV"}
+    minor_words = {
+        "de", "del", "la", "las", "los", "el", "en", "y", "o", "u", "a", "al",
+        "con", "por", "para", "sin", "sobre"
+    }
+
+    # Segmentar preservando delimitadores principales
+    segments = re.split(r'(\s*[\/\|–\-]\s*|\s*:\s*|\s*,\s*)', str(val))
+    output = []
+
+    for seg in segments:
+        seg_strip = seg.strip()
+        if seg_strip in {"/", "-", "|", "–"}:
+            output.append(f" {seg_strip} ")
+            continue
+        elif seg_strip == ":":
+            output.append(": ")
+            continue
+        elif seg_strip == ",":
+            output.append(", ")
+            continue
+
+        words = seg.split()
+        cleaned_words = []
+        for idx, w in enumerate(words):
+            m = re.match(r'^([(\[{<"\']*)(.*?)([)\]}>"\',.:;]*)$', w)
+            if not m:
+                cleaned_words.append(w)
+                continue
+            pre, core, post = m.groups()
+            if not core:
+                cleaned_words.append(w)
+                continue
+
+            upper_c = core.upper()
+            lower_c = core.lower()
+
+            # 1. Códigos numéricos o cuentas (110.01)
+            if re.match(r'^\d+(\.\d+)*$', core):
+                cleaned_words.append(pre + core + post)
+            # 2. Acrónimos y siglas financieras (USD, MN, BCB)
+            elif upper_c in acronyms or w.upper() in acronyms:
+                cleaned_words.append(pre + upper_c + post)
+            # 3. Numerales Romanos (VIII, IX, etc.)
+            elif upper_c in roman_nums:
+                cleaned_words.append(pre + upper_c + post)
+            # 4. Conectores en minúscula (salvo primer token del segmento)
+            elif idx > 0 and lower_c in minor_words:
+                cleaned_words.append(pre + lower_c + post)
+            # 5. Palabra estándar a Capitalize
+            else:
+                capitalized = core[0].upper() + core[1:].lower()
+                cleaned_words.append(pre + capitalized + post)
+
+        output.append(" ".join(cleaned_words))
+
+    res = "".join(output)
+    return re.sub(r'\s{2,}', ' ', res).strip()
+
+
 def get_replacement_table_target(
     report_code: str,
     db_host: str = DEFAULT_DB_HOST,
@@ -579,7 +649,7 @@ def insert_single_replacement_record(
         return False, err or "No se pudo determinar la tabla."
 
     orig_clean = str(original_value).strip()
-    final_clean = str(final_value).strip()
+    final_clean = str(final_value).strip() if final_value else format_to_title_case(orig_clean)
     srch_clean = str(srch_value).strip() if srch_value else normalize_srch_value(orig_clean)
 
     if not orig_clean and not final_clean:

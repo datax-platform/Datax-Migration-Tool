@@ -1,0 +1,32 @@
+# Git & Version Control
+.git
+.gitignore
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Frontend dependencies and dev files
+frontend/node_modules/
+frontend/.oxlintrc.json
+
+# Local output data (persisted via Docker volumes)
+output/*.sqlite
+attachtments/*
+!attachtments/.gitkeep
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+

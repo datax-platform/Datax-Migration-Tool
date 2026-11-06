@@ -48,15 +48,21 @@ async def websocket_logs(websocket: WebSocket):
     except Exception:
         log_manager.disconnect(websocket)
 
-@app.get("/")
-def root():
-    return {
-        "name": "DataX Migration Studio API",
-        "status": "online",
-        "version": "2.0.0",
-        "docs": "/docs"
-    }
-
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+# Servir Frontend compilado (React + Vite) si existe la carpeta dist (ej. en Docker)
+frontend_dist = os.path.join(PROJECT_ROOT, "frontend", "dist")
+if os.path.isdir(frontend_dist):
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
+else:
+    @app.get("/")
+    def root():
+        return {
+            "name": "DataX Migration Studio API",
+            "status": "online",
+            "version": "2.0.0",
+            "docs": "/docs"
+        }
