@@ -1,13 +1,13 @@
-from core.agent_analyzer import parse_commodity_price_unit
-import unicodedata
-"""Lógica de generación y preparación de robots y DAGs de migración (PostgreSQL / Airflow V2)."""
-
 import os
 import re
+import math
+import decimal
 import sqlite3
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 from sqlalchemy import text
+from core.agent_analyzer import parse_commodity_price_unit
 
 
 
@@ -19,7 +19,7 @@ def standardize_col_name(col: str) -> str:
     s = re.sub(r'[^a-z0-9_]', '', s)
     return s
 
-def scan_conversion_outputs(repo_path: str) -> List[Dict]:
+def scan_conversion_outputs(repo_path: str, engine=None) -> List[Dict]:
     """Escanea models/conversion/ en busca de familias y archivos .sqlite generados listos para migrar."""
     conv_dir = os.path.join(repo_path, "models", "conversion")
     if not os.path.isdir(conv_dir):
@@ -48,13 +48,23 @@ def scan_conversion_outputs(repo_path: str) -> List[Dict]:
                 rep_match = re.search(r"(D_[A-Z]{2}_\d{9}_\d{2})", f)
                 rep_code = rep_match.group(1) if rep_match else os.path.splitext(f)[0]
                 py_file = os.path.join(item_path, f"{rep_code}.py")
+                rep_name = ""
+                if engine:
+                    try:
+                        info = get_migration_db_info(rep_code, engine)
+                        if info:
+                            rep_name = info.get("name", "")
+                    except Exception:
+                        pass
                 reports.append({
                     "code": rep_code,
+                    "name": rep_name,
                     "sqlite_file": fpath,
                     "has_conversion_py": os.path.isfile(py_file)
                 })
 
         if reports:
+            reports.sort(key=lambda x: x["code"])
             families.append({
                 "parent_code": parent_code,
                 "migration_parent": migration_parent,
@@ -82,10 +92,10 @@ def get_migration_db_info(report_code: str, engine) -> Optional[Dict]:
                 "code": result[1],
                 "name": result[2],
                 "storage_table": result[3],
-                "conversion_factor": result[4],
-                "decimal_separator": result[5],
+                "conversion_factor": float(result[4]) if result[4] is not None else 1.0,
+                "decimal_separator": str(result[5]) if result[5] is not None else ",",
                 "load_scope": result[6],
-                "migrated_to": result[7]
+                "migrated_to": str(result[7]) if result[7] is not None else None
             }
     except Exception as e:
         print(f"Error al consultar report en platform_db: {e}")
@@ -96,10 +106,28 @@ def inspect_sqlite_structure(sqlite_path: str, table_name: str = "", extra_text:
     """Inspecciona la tabla SQLite para obtener columnas, muestras y opcionalmente sugerir metricas y unidades mediante analisis heuristico."""
     with sqlite3.connect(sqlite_path) as conn:
         cursor = conn.cursor()
-        if not table_name:
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('columns_to_review', 'sqlite_sequence');")
-            tables = [r[0] for r in cursor.fetchall()]
-            table_name = tables[0] if tables else ""
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = [r[0] for r in cursor.fetchall()]
+
+        target_table = None
+        if table_name and table_name in tables:
+            target_table = table_name
+        elif "data_melted" in tables:
+            target_table = "data_melted"
+        else:
+            candidates = [t for t in tables if t not in ('columns_to_review', 'sqlite_sequence')]
+            target_table = candidates[0] if candidates else (tables[0] if tables else "")
+
+        if not target_table:
+            return {
+                "all_columns": [], "title_cols": [], "nv_cols": [], "aux_cols": [],
+                "suggested_metric": "moneda", "suggested_unit": "BOB", "suggested_factor": 1.0,
+                "has_mixed_rows": False, "has_multi_currency": False, "has_multiple_facts": False,
+                "detected_facts": [], "detected_currencies": [], "titles_text": "",
+                "tables": tables, "table_name": ""
+            }
+
+        table_name = target_table
         cursor.execute(f'PRAGMA table_info("{table_name}");')
         pragma_cols = [row[1] for row in cursor.fetchall()]
         df = pd.read_sql_query(f'SELECT * FROM "{table_name}";', conn)
@@ -904,13 +932,22 @@ def generate_migration_preview_data(
 
     with sqlite3.connect(sqlite_path) as conn:
         cursor = conn.cursor()
-        if not table_name:
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('columns_to_review', 'sqlite_sequence');")
-            tables = [r[0] for r in cursor.fetchall()]
-            table_name = tables[0] if tables else ""
-        
-        if not table_name:
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = [r[0] for r in cursor.fetchall()]
+
+        target_table = None
+        if table_name and table_name in tables:
+            target_table = table_name
+        elif "data_melted" in tables:
+            target_table = "data_melted"
+        else:
+            candidates = [t for t in tables if t not in ('columns_to_review', 'sqlite_sequence')]
+            target_table = candidates[0] if candidates else (tables[0] if tables else "")
+
+        if not target_table:
             return {"columns": [], "rows": [], "total_rows": 0}
+
+        table_name = target_table
 
         try:
             cursor.execute(f'SELECT COUNT(*) FROM "{table_name}";')
@@ -1023,8 +1060,21 @@ def generate_migration_preview_data(
         preview_df.insert(idx_val + 1, "unidad_preview", unit)
 
     preview_df = preview_df.where(pd.notnull(preview_df), None)
+    recs = preview_df.to_dict(orient="records")
+    clean_rows = []
+    for r in recs:
+        cr = {}
+        for k, v in r.items():
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                cr[k] = None
+            elif pd.isna(v):
+                cr[k] = None
+            else:
+                cr[k] = v
+        clean_rows.append(cr)
+
     return {
         "columns": list(preview_df.columns),
-        "rows": preview_df.to_dict(orient="records"),
+        "rows": clean_rows,
         "total_rows": total_rows
     }

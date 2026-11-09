@@ -1,5 +1,6 @@
 import os
 import math
+import decimal
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -22,6 +23,21 @@ from core.migrator_migration import (
 from core.deployer import deploy_robot_to_server, trigger_dag_on_server
 
 router = APIRouter(prefix="/api/migration", tags=["Robots de Migración"])
+
+def sanitize_payload(data):
+    if isinstance(data, dict):
+        return {k: sanitize_payload(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [sanitize_payload(v) for v in data]
+    elif isinstance(data, decimal.Decimal):
+        return float(data)
+    elif isinstance(data, float):
+        if math.isnan(data) or math.isinf(data):
+            return None
+        return data
+    elif pd.isna(data):
+        return None
+    return data
 
 class AnalyzeSqliteRequest(BaseModel):
     sqlite_file: str
@@ -66,7 +82,8 @@ class DeployMigrationRequest(BaseModel):
 @router.get("/outputs")
 def get_migration_outputs():
     cfg = get_current_config()
-    outputs = scan_conversion_outputs(cfg["new_repo"])
+    engine = get_engine()
+    outputs = scan_conversion_outputs(cfg["new_repo"], engine=engine)
     existing = scan_existing_migration_robots(cfg["new_repo"])
     return {
         "outputs": outputs,
@@ -75,8 +92,26 @@ def get_migration_outputs():
 
 @router.get("/inspect")
 def inspect_sqlite(sqlite_file: str, report_code: str, use_heuristic: bool = False):
+    cfg = get_current_config()
     if not os.path.isfile(sqlite_file):
-        raise HTTPException(status_code=404, detail="Archivo SQLite no existe")
+        fname = os.path.basename(sqlite_file)
+        parent_cand = report_code.rsplit("_", 1)[0].replace("D_", "C_")
+        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        candidates = [
+            os.path.join(cfg.get("new_repo", ""), "models", "conversion", parent_cand, fname),
+            os.path.join(cfg.get("old_repo", ""), "models", "conversion", parent_cand, fname),
+            os.path.join(root_dir, "output", fname),
+        ]
+        found = None
+        for c in candidates:
+            if os.path.isfile(c):
+                found = c
+                break
+        if found:
+            sqlite_file = found
+        else:
+            raise HTTPException(status_code=404, detail=f"Archivo SQLite no existe: {sqlite_file}")
+
     engine = get_engine()
     db_info = get_migration_db_info(report_code, engine) if engine else None
     report_name = db_info.get("name", "") if db_info else ""
@@ -112,14 +147,14 @@ def inspect_sqlite(sqlite_file: str, report_code: str, use_heuristic: bool = Fal
         limit=50
     )
 
-    return {
+    return sanitize_payload({
         "report_code": report_code,
         "db_info": db_info,
         "structure": struct,
         "sample_columns": sample_cols,
         "sample_rows": sample_rows,
         "preview": preview
-    }
+    })
 
 @router.post("/analyze-sqlite")
 async def analyze_sqlite(req: AnalyzeSqliteRequest):
@@ -150,14 +185,31 @@ async def analyze_sqlite(req: AnalyzeSqliteRequest):
     except Exception as e:
         agent_res["preview"] = {"columns": [], "rows": [], "total_rows": 0, "error": str(e)}
 
-    return agent_res
+    return sanitize_payload(agent_res)
 
 @router.post("/preview-table")
 def preview_migration_table(req: PreviewMigrationRequest):
-    if not os.path.isfile(req.sqlite_file):
+    sqlite_file = req.sqlite_file
+    if not os.path.isfile(sqlite_file):
+        cfg = get_current_config()
+        fname = os.path.basename(sqlite_file)
+        parent_cand = (req.report_code or "").rsplit("_", 1)[0].replace("D_", "C_")
+        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        candidates = [
+            os.path.join(cfg.get("new_repo", ""), "models", "conversion", parent_cand, fname),
+            os.path.join(cfg.get("old_repo", ""), "models", "conversion", parent_cand, fname),
+            os.path.join(root_dir, "output", fname),
+        ]
+        for c in candidates:
+            if os.path.isfile(c):
+                sqlite_file = c
+                break
+
+    if not os.path.isfile(sqlite_file):
         raise HTTPException(status_code=404, detail="Archivo SQLite no encontrado")
-    return generate_migration_preview_data(
-        sqlite_path=req.sqlite_file,
+
+    res = generate_migration_preview_data(
+        sqlite_path=sqlite_file,
         table_name=req.report_code or "",
         metric=req.metric,
         unit=req.unit,
@@ -167,6 +219,7 @@ def preview_migration_table(req: PreviewMigrationRequest):
         custom_unit_code=req.custom_unit_code or "",
         limit=req.limit
     )
+    return sanitize_payload(res)
 
 @router.post("/generate")
 def generate_migration_code(req: GenerateMigrationRequest):

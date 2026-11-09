@@ -156,11 +156,24 @@ def get_custom_family(req: CustomFamilyRequest):
         with open(v1_file, "r", encoding="utf-8", errors="ignore") as f:
             v1_code = f.read()
 
+    unique_samples = sorted(list(dict.fromkeys(samples)))
+    matching_sample = ""
+    code_suffix = rep_code.split("_")[-1]
+    for s in unique_samples:
+        bname = os.path.basename(s).lower()
+        if rep_code.lower() in bname:
+            matching_sample = s
+            break
+        elif f"_{code_suffix}." in bname or f"_{code_suffix} " in bname or f"_{code_suffix}_" in bname:
+            matching_sample = s
+            break
+
     return {
         "report_code": rep_code,
         "parent_code": parent_code,
         "db_info": db_info,
-        "samples": list(set(samples)),
+        "samples": unique_samples,
+        "matching_sample": matching_sample,
         "has_v2": has_v2,
         "v2_code": v2_code,
         "has_v1": has_v1,
@@ -222,12 +235,14 @@ def get_family_detail(parent_code: str):
                 samples.append(p)
 
     extra_samples = detect_available_samples(parent_code, old_repo, new_repo)
+    all_samples = sorted(list(set(samples + extra_samples)))
+    sub_reports.sort(key=lambda x: x["code"])
 
     return {
         "parent_code": parent_code,
         "already_migrated": already_migrated,
         "sub_reports": sub_reports,
-        "samples": list(set(samples + extra_samples)),
+        "samples": all_samples,
     }
 
 @router.get("/report-code/{code}")
@@ -235,9 +250,27 @@ def get_report_code(code: str, parent_code: str):
     cfg = get_current_config()
     old_repo = cfg["old_repo"]
     new_repo = cfg["new_repo"]
+    engine = get_engine()
 
     v1_file = os.path.join(old_repo, "models", "conversion", parent_code, f"{code}.py")
     v2_file = os.path.join(new_repo, "models", "conversion", parent_code, f"{code}.py")
+
+    # Flexible search if not directly at expected path
+    if not os.path.isfile(v2_file):
+        conv_dir = os.path.join(new_repo, "models", "conversion")
+        if os.path.isdir(conv_dir):
+            for root, dirs, files in os.walk(conv_dir):
+                if f"{code}.py" in files:
+                    v2_file = os.path.join(root, f"{code}.py")
+                    break
+
+    if not os.path.isfile(v1_file):
+        old_conv_dir = os.path.join(old_repo, "models", "conversion")
+        if os.path.isdir(old_conv_dir):
+            for root, dirs, files in os.walk(old_conv_dir):
+                if f"{code}.py" in files:
+                    v1_file = os.path.join(root, f"{code}.py")
+                    break
 
     v1_code = ""
     if os.path.isfile(v1_file):
@@ -253,12 +286,38 @@ def get_report_code(code: str, parent_code: str):
     if v1_code:
         refactored_code = refactor_conversion_code(v1_code, code)
 
+    db_info = get_conversion_db_info(code, engine) if engine else None
+
+    # Detect all available samples for this parent
+    detected_samples = detect_available_samples(parent_code, old_repo, new_repo)
+    new_fam = os.path.join(new_repo, "models", "conversion", parent_code)
+    if os.path.isdir(new_fam):
+        for f in os.listdir(new_fam):
+            if f.lower().endswith((".xlsx", ".xls", ".pdf", ".csv")):
+                detected_samples.append(os.path.join(new_fam, f))
+    unique_samples = sorted(list(dict.fromkeys(detected_samples)))
+
+    # Identify matching sample file for this specific subreport code
+    matching_sample = ""
+    code_suffix = code.split("_")[-1]  # e.g., "01", "02"
+    for s in unique_samples:
+        bname = os.path.basename(s).lower()
+        if code.lower() in bname:
+            matching_sample = s
+            break
+        elif f"_{code_suffix}." in bname or f"_{code_suffix} " in bname or f"_{code_suffix}_" in bname:
+            matching_sample = s
+            break
+
     return {
         "code": code,
         "parent_code": parent_code,
         "v1_code": v1_code,
         "v2_code": v2_code,
-        "refactored_code": refactored_code
+        "refactored_code": refactored_code,
+        "db_info": db_info,
+        "samples": unique_samples,
+        "matching_sample": matching_sample,
     }
 
 @router.post("/save-code")
@@ -549,14 +608,23 @@ def get_sqlite(code: str, limit: int = 100):
         os.path.join(output_dir, f"{code}.sqlite"),
     ]
     parent_cand = code.rsplit("_", 1)[0].replace("D_", "C_")
-    candidates.append(os.path.join(cfg["new_repo"], "models", "conversion", parent_cand, f"{code}.sqlite"))
-    
-    conv_dir = os.path.join(cfg["new_repo"], "models", "conversion")
-    if os.path.isdir(conv_dir):
-        for root, dirs, files in os.walk(conv_dir):
-            if f"{code}.sqlite" in files:
-                candidates.append(os.path.join(root, f"{code}.sqlite"))
-                break
+    if cfg.get("new_repo"):
+        candidates.append(os.path.join(cfg["new_repo"], "models", "conversion", parent_cand, f"{code}.sqlite"))
+        conv_dir = os.path.join(cfg["new_repo"], "models", "conversion")
+        if os.path.isdir(conv_dir):
+            for root, dirs, files in os.walk(conv_dir):
+                if f"{code}.sqlite" in files:
+                    candidates.append(os.path.join(root, f"{code}.sqlite"))
+                    break
+
+    if cfg.get("old_repo"):
+        candidates.append(os.path.join(cfg["old_repo"], "models", "conversion", parent_cand, f"{code}.sqlite"))
+        old_conv_dir = os.path.join(cfg["old_repo"], "models", "conversion")
+        if os.path.isdir(old_conv_dir):
+            for root, dirs, files in os.walk(old_conv_dir):
+                if f"{code}.sqlite" in files:
+                    candidates.append(os.path.join(root, f"{code}.sqlite"))
+                    break
 
     sqlite_file = None
     for cand in candidates:

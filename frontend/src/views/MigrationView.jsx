@@ -157,6 +157,8 @@ export function MigrationView({ externalLogs = [] }) {
     setSelectedReport(reportCode);
     setSelectedSqlite(sqliteFile);
     setAgentResult(null);
+    setDbMigInfo(null);
+    setPreviewData(null);
 
     try {
       const res = await api.get(`/migration/inspect?sqlite_file=${encodeURIComponent(sqliteFile)}&report_code=${reportCode}&use_heuristic=${useOfflineHeuristic}`);
@@ -179,7 +181,8 @@ export function MigrationView({ externalLogs = [] }) {
         fetchPreviewTable(sqliteFile, reportCode, st.suggested_metric, st.suggested_unit, st.suggested_factor, st.has_mixed_rows);
       }
     } catch (e) {
-      console.error(e);
+      console.error("Error inspecting report:", e);
+      setLocalLogs((prev) => [...prev, `[ERROR] No se pudo inspeccionar ${reportCode}: ${e.response?.data?.detail || e.message}`]);
     }
   };
 
@@ -422,7 +425,17 @@ export function MigrationView({ externalLogs = [] }) {
               setSelectedParent(p);
               const fam = outputs.find((o) => o.parent_code === p);
               if (fam?.reports?.length > 0) {
-                inspectReport(p, fam.reports[0].code, fam.reports[0].sqlite_file);
+                const firstRep = fam.reports[0];
+                setSelectedReport(firstRep.code);
+                setSelectedSqlite(firstRep.sqlite_file);
+                inspectReport(p, firstRep.code, firstRep.sqlite_file);
+              } else {
+                setSelectedReport("");
+                setSelectedSqlite("");
+                setDbMigInfo(null);
+                setPreviewData(null);
+                setSqlCode("");
+                setPyCode("");
               }
             }}
             className="w-full px-3 py-2 text-xs font-mono border border-[#c2c2c2] rounded-[4px] bg-white outline-none"
@@ -443,8 +456,10 @@ export function MigrationView({ externalLogs = [] }) {
             value={selectedReport}
             onChange={(e) => {
               const repCode = e.target.value;
+              setSelectedReport(repCode);
               const repObj = activeReports.find((r) => r.code === repCode);
               if (repObj) {
+                setSelectedSqlite(repObj.sqlite_file);
                 inspectReport(selectedParent, repObj.code, repObj.sqlite_file);
               }
             }}
@@ -452,7 +467,7 @@ export function MigrationView({ externalLogs = [] }) {
           >
             {activeReports.map((r) => (
               <option key={r.code} value={r.code}>
-                {r.code} {r.has_conversion_py ? " [Migrado]" : ""}
+                {r.code} {r.name ? `(${r.name})` : ""} {r.has_conversion_py ? " [Migrado]" : ""}
               </option>
             ))}
           </select>

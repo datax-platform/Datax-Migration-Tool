@@ -18,9 +18,10 @@ services:
       - ./output:/app/output
       # Persistencia de archivos de muestra (Excel, PDF, etc.)
       - ./attachtments:/app/attachtments
-      # Mapeo en caliente del código backend
+      # Mapeo en caliente del código backend y bundle frontend
       - ./core:/app/core
       - ./server:/app/server
+      - ./frontend/dist:/app/frontend/dist
       # Mapeo de repositorios locales (toma las rutas de cada usuario desde su .env)
       - ${OLD_REPO_PATH:-./repos/old}:/repos/old
       - ${NEW_REPO_PATH:-./repos/new}:/repos/new

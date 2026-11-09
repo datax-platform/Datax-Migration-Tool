@@ -50,7 +50,7 @@ export function ConversionView({ externalLogs = [] }) {
   const [convFlowMode, setConvFlowMode] = useState("v1");
 
   // Selection mode: "manual" (Ingresar código manualmente) or "scan" (Explorar familias escaneadas)
-  const [selMode, setSelMode] = useState("manual");
+  const [selMode, setSelMode] = useState("scan");
 
   // Manual input values
   const [manualReportInput, setManualReportInput] = useState("D_BO_0000000XX_01");
@@ -144,7 +144,16 @@ export function ConversionView({ externalLogs = [] }) {
       setFamilies(list);
       if (list.length > 0) {
         setSelectedParent(list[0].parent_code);
-        loadFamily(list[0].parent_code);
+        await loadFamily(list[0].parent_code);
+      } else {
+        setSelectedParent("");
+        setFamilyDetail(null);
+        setSelectedSubReport("");
+        setReportDbInfo(null);
+        setV1Code("");
+        setV2Code("");
+        setAvailableSamples([]);
+        setSampleFile("");
       }
     } catch (e) {
       console.error(e);
@@ -154,30 +163,101 @@ export function ConversionView({ externalLogs = [] }) {
   const loadFamily = async (parentCode) => {
     try {
       const res = await api.get(`/conversion/family/${parentCode}`);
-      setFamilyDetail(res.data);
-      if (res.data.sub_reports?.length > 0) {
-        const first = res.data.sub_reports[0].code;
-        setSelectedSubReport(first);
-        loadReportCode(first, parentCode);
-      }
-      if (res.data.samples?.length > 0) {
-        setSampleFile(res.data.samples[0]);
-        setAvailableSamples(res.data.samples);
+      const famData = res.data;
+      setFamilyDetail(famData);
+      const subReports = famData.sub_reports || [];
+      const samples = famData.samples || [];
+      setAvailableSamples(samples);
+
+      if (subReports.length > 0) {
+        const first = subReports[0].code;
+        await selectSubReport(first, parentCode, famData);
+      } else {
+        setSelectedSubReport("");
+        setReportDbInfo(null);
+        setV1Code("");
+        setV2Code("");
+        setSampleFile(samples.length > 0 ? samples[0] : "");
+        setSqliteData(null);
+        setTestResult(null);
+        setBatchTestResults(null);
       }
     } catch (e) {
-      console.error(e);
+      console.error("Error loading family:", e);
     }
   };
 
-  const loadReportCode = async (code, parent) => {
+  const selectSubReport = async (code, parentCode, famDetail = null) => {
+    if (!code) return;
+    setSelectedSubReport(code);
+    setIsCodeModified(false);
+
+    // Reset previous execution results to avoid confusion
+    setTestResult(null);
+    setBatchTestResults(null);
+    setDeployResult(null);
+    setTriggerResult(null);
+
+    const activeFam = famDetail || familyDetail;
+    const pCode = parentCode || activeFam?.parent_code || selectedParent;
+
+    // Check if sub_report info already exists in family detail
+    const existingSub = activeFam?.sub_reports?.find((s) => s.code === code);
+    if (existingSub?.db_info) {
+      setReportDbInfo(existingSub.db_info);
+      if (existingSub.db_info.page_number) {
+        setPageNumber(existingSub.db_info.page_number);
+      }
+    }
+
     try {
-      const res = await api.get(`/conversion/report-code/${code}?parent_code=${parent || selectedParent}`);
+      const res = await api.get(`/conversion/report-code/${code}?parent_code=${pCode}`);
       setV1Code(res.data.v1_code || "");
       setV2Code(res.data.v2_code || res.data.refactored_code || "");
       setPrSearchQuery(code);
+
+      if (res.data.db_info) {
+        setReportDbInfo(res.data.db_info);
+        if (res.data.db_info.page_number) {
+          setPageNumber(res.data.db_info.page_number);
+        }
+      }
+
+      // Samples selection: match sample to this specific subreport code
+      const samplesList = (res.data.samples?.length ? res.data.samples : activeFam?.samples) || [];
+      if (samplesList.length > 0) {
+        setAvailableSamples(samplesList);
+        let matched = res.data.matching_sample;
+        if (!matched) {
+          const suffix = code.split("_").pop(); // e.g. "01", "02"
+          matched = samplesList.find((s) => {
+            const bname = s.split(/[\\/]/).pop().toLowerCase();
+            return (
+              bname.includes(code.toLowerCase()) ||
+              bname.includes(`_${suffix}.`) ||
+              bname.includes(`_${suffix} `) ||
+              bname.includes(`_${suffix}_`)
+            );
+          });
+        }
+        setSampleFile(matched || samplesList[0]);
+      } else {
+        setAvailableSamples([]);
+        setSampleFile("");
+      }
+
+      // Automatically preload sqlite data and replacements for the newly selected subreport
+      loadSqlite(code);
+      if (step === 3) {
+        loadReplacements(code);
+      }
     } catch (e) {
-      console.error(e);
+      console.error(`Error loading report code for ${code}:`, e);
     }
+  };
+
+  const loadReportCode = (code, parent) => {
+    return selectSubReport(code, parent, familyDetail);
   };
 
   // Manual report inspection
@@ -191,13 +271,36 @@ export function ConversionView({ externalLogs = [] }) {
       setSelectedSubReport(repCode);
       setSelectedParent(res.data.parent_code);
       setReportDbInfo(res.data.db_info);
+      if (res.data.db_info?.page_number) {
+        setPageNumber(res.data.db_info.page_number);
+      }
       setV1Code(res.data.v1_code || "");
       setV2Code(res.data.v2_code || res.data.refactored_code || "");
-      if (res.data.samples?.length > 0) {
-        setSampleFile(res.data.samples[0]);
-        setAvailableSamples(res.data.samples);
+      setTestResult(null);
+      setBatchTestResults(null);
+
+      const samples = res.data.samples || [];
+      setAvailableSamples(samples);
+      if (samples.length > 0) {
+        let matched = res.data.matching_sample;
+        if (!matched) {
+          const suffix = repCode.split("_").pop();
+          matched = samples.find((s) => {
+            const bname = s.split(/[\\/]/).pop().toLowerCase();
+            return (
+              bname.includes(repCode.toLowerCase()) ||
+              bname.includes(`_${suffix}.`) ||
+              bname.includes(`_${suffix} `) ||
+              bname.includes(`_${suffix}_`)
+            );
+          });
+        }
+        setSampleFile(matched || samples[0]);
+      } else {
+        setSampleFile("");
       }
       setPrSearchQuery(repCode);
+      loadSqlite(repCode);
     } catch (e) {
       console.error(e);
     }
@@ -1027,14 +1130,14 @@ export function ConversionView({ externalLogs = [] }) {
               <select
                 value={selectedSubReport}
                 onChange={(e) => {
-                  setSelectedSubReport(e.target.value);
-                  loadReportCode(e.target.value, selectedParent);
+                  const newCode = e.target.value;
+                  selectSubReport(newCode, selectedParent, familyDetail);
                 }}
                 className="w-full px-3 py-2 text-xs font-mono border border-[#c2c2c2] rounded-[4px] bg-white outline-none"
               >
                 {familyDetail?.sub_reports?.map((sub) => (
                   <option key={sub.code} value={sub.code}>
-                    {sub.code}
+                    {sub.code} {sub.db_info?.name ? `(${sub.db_info.name})` : ""}
                   </option>
                 ))}
               </select>
@@ -1079,11 +1182,17 @@ export function ConversionView({ externalLogs = [] }) {
                   <Database className="w-3.5 h-3.5 text-[#024ad8]" />
                   Metadatos en BD:
                 </span>
-                <span className="text-[#3d3d3d]">{reportDbInfo.name || "Sin nombre registrado"}</span>
+                <span className="text-[#3d3d3d] font-semibold">{reportDbInfo.name || "Sin nombre registrado"}</span>
                 <span className="mx-2 text-slate-300">•</span>
                 <span className="text-[#636363]">Storage: <code>{reportDbInfo.storage_table || "-"}</code></span>
                 <span className="mx-2 text-slate-300">•</span>
                 <span className="text-[#636363]">Reemplazos: <code>{reportDbInfo.replacement_table || "-"}</code></span>
+                {reportDbInfo.page_number && (
+                  <>
+                    <span className="mx-2 text-slate-300">•</span>
+                    <span className="text-[#636363]">Hoja/Pág: <code>{reportDbInfo.page_number}</code></span>
+                  </>
+                )}
               </div>
               <Badge variant="primary">{selectedSubReport}</Badge>
             </div>
@@ -1403,9 +1512,12 @@ export function ConversionView({ externalLogs = [] }) {
           <div className="hp-card p-6 space-y-6">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-[#e8e8e8] pb-4">
               <div>
-                <h3 className="font-bold text-base text-[#1a1a1a] flex items-center gap-2">
+                <h3 className="font-bold text-base text-[#1a1a1a] flex items-center gap-2 flex-wrap">
                   <span>Pruebas de Conversión:</span>
                   <span className="font-mono text-[#024ad8]">{selectedSubReport}</span>
+                  {reportDbInfo?.name && (
+                    <span className="text-xs font-medium text-[#636363]">({reportDbInfo.name})</span>
+                  )}
                 </h3>
                 <p className="text-xs text-[#636363] mt-0.5">
                   Ejecuta los dos tipos oficiales de pruebas del pipeline: extracción pura unitaria y validación con reemplazos en BD.
