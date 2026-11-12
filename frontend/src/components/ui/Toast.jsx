@@ -2,9 +2,8 @@ import React, { useEffect } from "react";
 import { CheckCircle2, AlertCircle, AlertTriangle, Info, Loader2, X } from "lucide-react";
 
 export function Toast({ toast, onClose }) {
-  if (!toast) return null;
-
   useEffect(() => {
+    if (!toast) return;
     if (toast.duration !== 0) {
       const timer = setTimeout(() => {
         onClose();
@@ -12,6 +11,8 @@ export function Toast({ toast, onClose }) {
       return () => clearTimeout(timer);
     }
   }, [toast, onClose]);
+
+  if (!toast) return null;
 
   const typeConfig = {
     success: {
@@ -56,7 +57,7 @@ export function Toast({ toast, onClose }) {
   const Icon = config.icon;
 
   return (
-    <div className="fixed bottom-6 right-6 z-50 max-w-sm w-full transition-all duration-300">
+    <div className="fixed bottom-6 right-6 z-50 max-w-sm w-full transition-all duration-300" role="alert">
       <div
         className={`flex items-start gap-3 p-4 rounded-xl border ${config.border} ${config.bg} text-white shadow-2xl backdrop-blur-md transition-all`}
         style={{

@@ -215,6 +215,10 @@ def refactor_conversion_code(raw_code: str, report_code: str) -> str:
                 new_lines.append(f"{indent}import traceback; traceback.print_exc()")
     code_content = "\n".join(new_lines)
 
+    # 7b. Compatibilidad Pandas 3.x: reemplazar fillna(method="ffill"/"bfill") obsoleto
+    code_content = re.sub(r'\.fillna\(\s*method\s*=\s*["\'](?:ffill|pad)["\']\s*\)', '.ffill()', code_content)
+    code_content = re.sub(r'\.fillna\(\s*method\s*=\s*["\'](?:bfill|backfill)["\']\s*\)', '.bfill()', code_content)
+
     # 8. Limpiar cualquier alias huérfano previo para evitar NameError
     code_content = re.sub(r'^[ \t]*Robot\s*=\s*[A-Za-z0-9_]+[^\n]*\n?', '', code_content, flags=re.MULTILINE)
     code_content = re.sub(r'^[ \t]*Executor_[A-Za-z0-9_]+\s*=\s*[A-Za-z0-9_]+[^\n]*\n?', '', code_content, flags=re.MULTILINE)

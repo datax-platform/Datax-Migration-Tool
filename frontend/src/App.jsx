@@ -52,11 +52,21 @@ export function App() {
 
       {/* 3. Main Workspace Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
-        {activeTab === "download" && <DownloadView externalLogs={logs} />}
-        {activeTab === "conversion" && <ConversionView externalLogs={logs} />}
-        {activeTab === "migration" && <MigrationView externalLogs={logs} />}
+        {activeTab === "download" && (
+          <DownloadView externalLogs={logs} onClearLogs={() => setLogs([])} />
+        )}
+        {activeTab === "conversion" && (
+          <ConversionView externalLogs={logs} onClearLogs={() => setLogs([])} />
+        )}
+        {activeTab === "migration" && (
+          <MigrationView externalLogs={logs} onClearLogs={() => setLogs([])} />
+        )}
         {activeTab === "autogenerate" && (
-          <AutoGenerateView externalLogs={logs} onNavigateTab={setActiveTab} />
+          <AutoGenerateView
+            externalLogs={logs}
+            onClearLogs={() => setLogs([])}
+            onNavigateTab={setActiveTab}
+          />
         )}
         {activeTab === "metrics" && <MetricsView />}
       </main>

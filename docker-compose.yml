@@ -6,7 +6,7 @@ services:
     container_name: datax-migration-studio
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${APP_PORT:-8000}:8000"
     env_file:
       - path: .env
         required: false
@@ -18,10 +18,9 @@ services:
       - ./output:/app/output
       # Persistencia de archivos de muestra (Excel, PDF, etc.)
       - ./attachtments:/app/attachtments
-      # Mapeo en caliente del código backend y bundle frontend
+      # Mapeo en caliente del código backend
       - ./core:/app/core
       - ./server:/app/server
-      - ./frontend/dist:/app/frontend/dist
       # Mapeo de repositorios locales (toma las rutas de cada usuario desde su .env)
       - ${OLD_REPO_PATH:-./repos/old}:/repos/old
       - ${NEW_REPO_PATH:-./repos/new}:/repos/new

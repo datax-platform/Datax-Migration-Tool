@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Truck,
   Play,
@@ -25,13 +25,21 @@ import {
   Shuffle,
   Edit2,
   Settings,
+  Columns3,
+  ChevronLeft,
+  ChevronRight,
+  Maximize2,
+  Minimize2,
+  WrapText,
 } from "lucide-react";
 import Editor from "@monaco-editor/react";
 import { api } from "../services/api";
 import { Badge } from "../components/ui/Badge";
 import { TerminalLogs } from "../components/ui/TerminalLogs";
+import { Toast } from "../components/ui/Toast";
 
-export function MigrationView({ externalLogs = [] }) {
+export function MigrationView({ externalLogs = [], onClearLogs }) {
+  const [toast, setToast] = useState(null);
   // Flow mode: "conversion_sqlite" or "existing_v2"
   const [migFlowMode, setMigFlowMode] = useState("conversion_sqlite");
 
@@ -53,6 +61,13 @@ export function MigrationView({ externalLogs = [] }) {
   const [useOfflineHeuristic, setUseOfflineHeuristic] = useState(false);
   const [previewData, setPreviewData] = useState(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
+  const [previewLimit, setPreviewLimit] = useState(100);
+  const [previewOffset, setPreviewOffset] = useState(0);
+  const [includeFileCol, setIncludeFileCol] = useState(false);
+  const [hiddenColumns, setHiddenColumns] = useState([]);
+  const [showColumnMenu, setShowColumnMenu] = useState(false);
+  const [expandTableHeight, setExpandTableHeight] = useState(false);
+  const [wrapTableCells, setWrapTableCells] = useState(false);
 
   // Migration fields
   const [chosenMetric, setChosenMetric] = useState("precio");
@@ -60,6 +75,12 @@ export function MigrationView({ externalLogs = [] }) {
   const [customUnit, setCustomUnit] = useState("");
   const [chosenFactor, setChosenFactor] = useState(1.0);
   const [isMixed, setIsMixed] = useState(false);
+  const [useAgentCode, setUseAgentCode] = useState(false);
+  const [formEditTick, setFormEditTick] = useState(0);
+
+  // Refs to prevent stale async responses from overwriting newer selections
+  const activeTargetRef = useRef({ reportCode: "", sqliteFile: "" });
+  const previewSeqRef = useRef(0);
 
   // Generated code
   const [sqlCode, setSqlCode] = useState("");
@@ -93,9 +114,30 @@ export function MigrationView({ externalLogs = [] }) {
     "Tn", "Kg", "m3", "MMpcd", "Bbl", "litros", "°C", "mm"
   ];
 
+  const effectiveMetricOptions = metricOptions.includes(chosenMetric)
+    ? metricOptions
+    : [...metricOptions, chosenMetric];
+
   useEffect(() => {
     loadOutputs();
   }, [migFlowMode]);
+
+  useEffect(() => {
+    if (formEditTick === 0 || !selectedSqlite || !selectedReport) return;
+    const timer = setTimeout(() => {
+      fetchPreviewTable(
+        selectedSqlite,
+        selectedReport,
+        chosenMetric,
+        customUnit || chosenUnit,
+        chosenFactor,
+        isMixed,
+        useAgentCode ? agentResult?.get_metric_code || "" : "",
+        useAgentCode ? agentResult?.get_unit_code || "" : ""
+      );
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [formEditTick]);
 
   const loadOutputs = async () => {
     try {
@@ -106,12 +148,15 @@ export function MigrationView({ externalLogs = [] }) {
       setExistingRobots(ex);
 
       if (list.length > 0) {
-        setSelectedParent(list[0].parent_code);
-        if (list[0].reports?.length > 0) {
-          const firstRep = list[0].reports[0];
-          setSelectedReport(firstRep.code);
-          setSelectedSqlite(firstRep.sqlite_file);
-          inspectReport(list[0].parent_code, firstRep.code, firstRep.sqlite_file);
+        const keepFam = list.find((o) => o.parent_code === selectedParent);
+        const targetFam = keepFam || list[0];
+        setSelectedParent(targetFam.parent_code);
+        if (targetFam.reports?.length > 0) {
+          const keepRep = targetFam.reports.find((r) => r.code === selectedReport);
+          const targetRep = keepRep || targetFam.reports[0];
+          setSelectedReport(targetRep.code);
+          setSelectedSqlite(targetRep.sqlite_file);
+          inspectReport(targetFam.parent_code, targetRep.code, targetRep.sqlite_file);
         }
       }
     } catch (e) {
@@ -127,10 +172,17 @@ export function MigrationView({ externalLogs = [] }) {
     unit = customUnit || chosenUnit,
     factor = chosenFactor,
     mixed = isMixed,
-    customM = agentResult?.get_metric_code || "",
-    customU = agentResult?.get_unit_code || ""
+    customM = useAgentCode ? agentResult?.get_metric_code || "" : "",
+    customU = useAgentCode ? agentResult?.get_unit_code || "" : "",
+    options = {}
   ) => {
-    if (!sqliteFile) return;
+    if (!sqliteFile || !reportCode) return;
+    const {
+      limit = previewLimit,
+      offset = previewOffset,
+      includeFile = includeFileCol,
+    } = options;
+    const seq = ++previewSeqRef.current;
     setLoadingPreview(true);
     try {
       const res = await api.post("/migration/preview-table", {
@@ -142,113 +194,207 @@ export function MigrationView({ externalLogs = [] }) {
         is_mixed: mixed,
         custom_metric_code: customM,
         custom_unit_code: customU,
-        limit: 50,
+        limit,
+        offset,
+        include_file: includeFile,
       });
+      if (
+        seq !== previewSeqRef.current ||
+        activeTargetRef.current.reportCode !== reportCode ||
+        activeTargetRef.current.sqliteFile !== sqliteFile
+      ) {
+        return;
+      }
       setPreviewData(res.data);
     } catch (err) {
       console.error("Error fetching preview table:", err);
     } finally {
-      setLoadingPreview(false);
+      if (seq === previewSeqRef.current) {
+        setLoadingPreview(false);
+      }
     }
   };
 
   const inspectReport = async (parentCode, reportCode, sqliteFile) => {
+    activeTargetRef.current = { reportCode, sqliteFile };
+    const seq = ++previewSeqRef.current;
+
     setSelectedParent(parentCode);
     setSelectedReport(reportCode);
     setSelectedSqlite(sqliteFile);
     setAgentResult(null);
+    setUseAgentCode(false);
+    setCustomUnit("");
     setDbMigInfo(null);
+    setStructInfo(null);
     setPreviewData(null);
+    setPreviewOffset(0);
+    setHiddenColumns([]);
+    setShowColumnMenu(false);
+    setSqlCode("");
+    setPyCode("");
+    setLoadingPreview(true);
 
     try {
-      const res = await api.get(`/migration/inspect?sqlite_file=${encodeURIComponent(sqliteFile)}&report_code=${reportCode}&use_heuristic=${useOfflineHeuristic}`);
+      const res = await api.get(
+        `/migration/inspect?sqlite_file=${encodeURIComponent(sqliteFile)}&report_code=${reportCode}&use_heuristic=${useOfflineHeuristic}&limit=${previewLimit}&offset=0&include_file=${includeFileCol}`
+      );
+      if (
+        activeTargetRef.current.reportCode !== reportCode ||
+        activeTargetRef.current.sqliteFile !== sqliteFile
+      ) {
+        return;
+      }
+
       setDbMigInfo(res.data.db_info);
       const st = res.data.structure || {};
       setStructInfo(st);
 
-      // Defaults
-      if (st.suggested_metric) setChosenMetric(st.suggested_metric);
-      if (st.suggested_unit) setChosenUnit(st.suggested_unit);
-      if (st.suggested_factor) setChosenFactor(st.suggested_factor);
-      if (st.has_mixed_rows || st.has_multi_currency || st.has_multiple_facts) setIsMixed(true);
+      const nextMetric = st.suggested_metric || "precio";
+      const nextUnit = st.suggested_unit || "BOB";
+      const nextFactor = st.suggested_factor || 1.0;
+      const nextMixed = Boolean(st.has_mixed_rows || st.has_multi_currency || st.has_multiple_facts);
+
+      if (st.suggested_metric) setChosenMetric(nextMetric);
+      if (st.suggested_unit) {
+        if (commonUnits.includes(nextUnit)) {
+          setChosenUnit(nextUnit);
+          setCustomUnit("");
+        } else {
+          setCustomUnit(nextUnit);
+        }
+      }
+      if (st.suggested_factor) setChosenFactor(nextFactor);
+      setIsMixed(nextMixed);
 
       // Auto generate draft code
-      generateDraftCode(parentCode, reportCode, sqliteFile, st.suggested_metric, st.suggested_unit, st.suggested_factor, st.has_mixed_rows);
+      generateDraftCode(parentCode, reportCode, sqliteFile, nextMetric, nextUnit, nextFactor, nextMixed, "", "", res.data.db_info?.name || "");
 
-      if (res.data.preview && res.data.preview.rows?.length > 0) {
+      if (res.data.preview && res.data.preview.rows?.length > 0 && seq === previewSeqRef.current) {
         setPreviewData(res.data.preview);
+        setLoadingPreview(false);
       } else {
-        fetchPreviewTable(sqliteFile, reportCode, st.suggested_metric, st.suggested_unit, st.suggested_factor, st.has_mixed_rows);
+        await fetchPreviewTable(sqliteFile, reportCode, nextMetric, nextUnit, nextFactor, nextMixed, "", "");
       }
     } catch (e) {
       console.error("Error inspecting report:", e);
       setLocalLogs((prev) => [...prev, `[ERROR] No se pudo inspeccionar ${reportCode}: ${e.response?.data?.detail || e.message}`]);
+      if (seq === previewSeqRef.current) {
+        setLoadingPreview(false);
+      }
     }
   };
 
   // Run AI Agent SQLite Analysis
   const handleRunAiAgent = async () => {
-    if (!selectedSqlite) return;
+    if (!selectedSqlite || !selectedReport) return;
+    const targetParent = selectedParent;
+    const targetReport = selectedReport;
+    const targetSqlite = selectedSqlite;
+
     setAnalyzingAgent(true);
     try {
       const res = await api.post("/migration/analyze-sqlite", {
-        sqlite_file: selectedSqlite,
-        report_code: selectedReport,
+        sqlite_file: targetSqlite,
+        report_code: targetReport,
+        limit: previewLimit,
+        offset: previewOffset,
+        include_file: includeFileCol,
       });
-      setAgentResult(res.data);
-      if (res.data.base_metric) setChosenMetric(res.data.base_metric);
-      if (res.data.base_unit) setChosenUnit(res.data.base_unit);
-      if (res.data.conversion_factor) setChosenFactor(res.data.conversion_factor);
-      if (res.data.is_mixed !== undefined) setIsMixed(res.data.is_mixed);
 
+      if (
+        activeTargetRef.current.reportCode !== targetReport ||
+        activeTargetRef.current.sqliteFile !== targetSqlite
+      ) {
+        return;
+      }
+
+      const nextMetric = res.data.base_metric || chosenMetric;
+      const nextUnit = res.data.base_unit || chosenUnit;
+      const nextFactor = res.data.conversion_factor || chosenFactor;
+      const nextMixed = res.data.is_mixed !== undefined ? Boolean(res.data.is_mixed) : isMixed;
+      const nextCustomM = res.data.get_metric_code || "";
+      const nextCustomU = res.data.get_unit_code || "";
+
+      setAgentResult(res.data);
+      setUseAgentCode(Boolean(nextCustomM && nextCustomU));
+      setChosenMetric(nextMetric);
+      if (commonUnits.includes(nextUnit)) {
+        setChosenUnit(nextUnit);
+        setCustomUnit("");
+      } else {
+        setCustomUnit(nextUnit);
+      }
+      setChosenFactor(nextFactor);
+      setIsMixed(nextMixed);
+
+      const seq = ++previewSeqRef.current;
       if (res.data.preview && res.data.preview.rows?.length > 0) {
         setPreviewData(res.data.preview);
       } else {
-        fetchPreviewTable(
-          selectedSqlite,
-          selectedReport,
-          res.data.base_metric || chosenMetric,
-          res.data.base_unit || chosenUnit,
-          res.data.conversion_factor || chosenFactor,
-          res.data.is_mixed !== undefined ? res.data.is_mixed : isMixed,
-          res.data.get_metric_code,
-          res.data.get_unit_code
+        await fetchPreviewTable(
+          targetSqlite,
+          targetReport,
+          nextMetric,
+          nextUnit,
+          nextFactor,
+          nextMixed,
+          nextCustomM,
+          nextCustomU
         );
       }
 
       // Re-generate draft with agent codes
       generateDraftCode(
-        selectedParent,
-        selectedReport,
-        selectedSqlite,
-        res.data.base_metric || chosenMetric,
-        res.data.base_unit || chosenUnit,
-        res.data.conversion_factor || chosenFactor,
-        res.data.is_mixed,
-        res.data.get_metric_code,
-        res.data.get_unit_code
+        targetParent,
+        targetReport,
+        targetSqlite,
+        nextMetric,
+        nextUnit,
+        nextFactor,
+        nextMixed,
+        nextCustomM,
+        nextCustomU
       );
+
+      setToast({
+        type: "success",
+        title: "Análisis IA Aplicado",
+        message: `Métrica: ${nextMetric} | Unidad: ${nextUnit} | Factor: ${nextFactor}`,
+      });
     } catch (e) {
-      alert("Error ejecutando Agente IA: " + (e.response?.data?.detail || e.message));
+      setToast({
+        type: "error",
+        title: "Error del Agente IA",
+        message: e.response?.data?.detail || e.message,
+      });
     } finally {
       setAnalyzingAgent(false);
     }
   };
 
-  const generateDraftCode = async (parentCode, reportCode, sqliteFile, metric, unit, factor, mixed, customM = "", customU = "") => {
+  const generateDraftCode = async (parentCode, reportCode, sqliteFile, metric, unit, factor, mixed, customM = "", customU = "", reportNameOverride = null) => {
     try {
+      const effectiveCustomM = customM || (useAgentCode ? agentResult?.get_metric_code || "" : "");
+      const effectiveCustomU = customU || (useAgentCode ? agentResult?.get_unit_code || "" : "");
       const res = await api.post("/migration/generate", {
         parent_code: parentCode,
         report_code: reportCode,
         sqlite_file: sqliteFile,
-        report_name: dbMigInfo?.name || "",
+        report_name: reportNameOverride !== null ? reportNameOverride : dbMigInfo?.name || "",
         metric: metric || chosenMetric,
-        unit: customUnit || unit || chosenUnit,
+        unit: unit || customUnit || chosenUnit,
         factor: factor || chosenFactor,
         has_mixed_rows: mixed !== undefined ? mixed : isMixed,
-        custom_metric_code: customM || agentResult?.get_metric_code || "",
-        custom_unit_code: customU || agentResult?.get_unit_code || "",
+        custom_metric_code: effectiveCustomM,
+        custom_unit_code: effectiveCustomU,
       });
+      if (
+        activeTargetRef.current.reportCode !== reportCode ||
+        activeTargetRef.current.sqliteFile !== sqliteFile
+      ) {
+        return;
+      }
       setSqlCode(res.data.sql_code || "");
       setPyCode(res.data.py_code || "");
     } catch (e) {
@@ -265,10 +411,18 @@ export function MigrationView({ externalLogs = [] }) {
         sql_content: sqlCode,
         py_content: pyCode,
       });
-      alert(res.data.message || "Archivos guardados en V2 con éxito!");
+      setToast({
+        type: "success",
+        title: "Archivos Guardados",
+        message: res.data.message || "Archivos guardados en V2 con éxito.",
+      });
       setLocalLogs((prev) => [...prev, `[SAVE] ${res.data.message}`]);
     } catch (e) {
-      alert("Error guardando: " + (e.response?.data?.detail || e.message));
+      setToast({
+        type: "error",
+        title: "Error al Guardar",
+        message: e.response?.data?.detail || e.message,
+      });
     } finally {
       setLoading(false);
     }
@@ -297,7 +451,11 @@ export function MigrationView({ externalLogs = [] }) {
 
   const handleTriggerMigrationDag = async () => {
     if (!sshPass) {
-      alert("Por favor introduce la contraseña del servidor SSH para conectar.");
+      setToast({
+        type: "warning",
+        title: "Contraseña Requerida",
+        message: "Por favor introduce la contraseña del servidor SSH para conectar.",
+      });
       return;
     }
     setTriggeringMigDag(true);
@@ -364,17 +522,272 @@ export function MigrationView({ externalLogs = [] }) {
         setLocalLogs((prev) => [...prev, ...res.data.logs]);
       }
       setDeployResult(res.data);
-      alert(res.data.message || "Despliegue completado!");
+      setToast({
+        type: res.data.success === false ? "warning" : "success",
+        title: res.data.success === false ? "Despliegue con Advertencias" : "Despliegue Completado",
+        message: res.data.message || "Despliegue completado.",
+      });
     } catch (e) {
       const err = e.response?.data?.detail || e.message;
       setDeployResult({ success: false, message: err });
-      alert("Error desplegando: " + err);
+      setToast({
+        type: "error",
+        title: "Error al Desplegar",
+        message: err,
+      });
     } finally {
       setLoading(false);
     }
   };
 
   const activeReports = outputs.find((o) => o.parent_code === selectedParent)?.reports || [];
+
+  const allPreviewCols = previewData?.columns || [];
+  const visiblePreviewCols = allPreviewCols.filter((col) => !hiddenColumns.includes(col));
+  const totalSqliteRows = previewData?.total_rows || 0;
+  const currentRowsCount = previewData?.rows?.length || 0;
+  const startRowNum = currentRowsCount > 0 ? previewOffset + 1 : 0;
+  const endRowNum = previewOffset + currentRowsCount;
+  const hasPrevPage = previewOffset > 0 && previewLimit > 0;
+  const hasNextPage = previewLimit > 0 && previewOffset + currentRowsCount < totalSqliteRows;
+
+  const handleChangePreviewLimit = (newLimit) => {
+    setPreviewLimit(newLimit);
+    setPreviewOffset(0);
+    fetchPreviewTable(
+      selectedSqlite,
+      selectedReport,
+      chosenMetric,
+      customUnit || chosenUnit,
+      chosenFactor,
+      isMixed,
+      useAgentCode ? agentResult?.get_metric_code || "" : "",
+      useAgentCode ? agentResult?.get_unit_code || "" : "",
+      { limit: newLimit, offset: 0, includeFile: includeFileCol }
+    );
+  };
+
+  const handlePagePreview = (direction) => {
+    if (previewLimit <= 0) return;
+    const nextOffset = Math.max(0, previewOffset + direction * previewLimit);
+    setPreviewOffset(nextOffset);
+    fetchPreviewTable(
+      selectedSqlite,
+      selectedReport,
+      chosenMetric,
+      customUnit || chosenUnit,
+      chosenFactor,
+      isMixed,
+      useAgentCode ? agentResult?.get_metric_code || "" : "",
+      useAgentCode ? agentResult?.get_unit_code || "" : "",
+      { limit: previewLimit, offset: nextOffset, includeFile: includeFileCol }
+    );
+  };
+
+  const handleToggleIncludeFile = (checked) => {
+    setIncludeFileCol(checked);
+    fetchPreviewTable(
+      selectedSqlite,
+      selectedReport,
+      chosenMetric,
+      customUnit || chosenUnit,
+      chosenFactor,
+      isMixed,
+      useAgentCode ? agentResult?.get_metric_code || "" : "",
+      useAgentCode ? agentResult?.get_unit_code || "" : "",
+      { limit: previewLimit, offset: previewOffset, includeFile: checked }
+    );
+  };
+
+  const toggleColumnVisibility = (col) => {
+    setHiddenColumns((prev) =>
+      prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col]
+    );
+  };
+
+  const renderPreviewControls = () => (
+    <div className="flex flex-wrap items-center gap-2">
+      {/* Row limit selector */}
+      <div className="flex items-center gap-1.5 bg-[#f7f7f7] border border-[#dcdcdc] rounded-[4px] px-2 h-7">
+        <span className="text-[11px] font-semibold text-[#636363]">Filas:</span>
+        <select
+          value={previewLimit}
+          onChange={(e) => handleChangePreviewLimit(Number(e.target.value))}
+          disabled={loadingPreview || !selectedSqlite}
+          className="text-[11px] font-bold text-[#1a1a1a] bg-transparent outline-none cursor-pointer"
+          title="Cantidad de filas a mostrar desde SQLite"
+        >
+          <option value={50}>50</option>
+          <option value={100}>100</option>
+          <option value={250}>250</option>
+          <option value={500}>500</option>
+          <option value={1000}>1,000</option>
+          <option value={0}>Todas</option>
+        </select>
+      </div>
+
+      {/* Column visibility selector */}
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setShowColumnMenu((v) => !v)}
+          disabled={!allPreviewCols.length}
+          className="hp-btn hp-btn-outline-ink text-[11px] h-7 px-2.5 flex items-center gap-1.5"
+          title="Mostrar u ocultar columnas de la tabla"
+        >
+          <Columns3 className="w-3.5 h-3.5" />
+          <span>
+            Columnas ({visiblePreviewCols.length}/{allPreviewCols.length})
+          </span>
+        </button>
+
+        {showColumnMenu && allPreviewCols.length > 0 && (
+          <div className="absolute right-0 mt-1 w-64 bg-white border border-[#dcdcdc] rounded-[6px] shadow-lg z-30 p-2.5 space-y-2">
+            <div className="flex items-center justify-between border-b border-[#e8e8e8] pb-1.5">
+              <span className="text-[11px] font-bold text-[#1a1a1a] uppercase">
+                Columnas visibles
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowColumnMenu(false)}
+                className="text-[10px] font-semibold text-[#636363] hover:text-[#1a1a1a]"
+              >
+                Cerrar
+              </button>
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => setHiddenColumns([])}
+                className="text-[10px] px-2 py-0.5 rounded bg-[#f0f0f0] hover:bg-[#e5e5e5] text-[#1a1a1a] font-semibold"
+              >
+                Mostrar todas
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setHiddenColumns(allPreviewCols.filter((c) => c.startsWith("titulo")))
+                }
+                className="text-[10px] px-2 py-0.5 rounded bg-[#f0f0f0] hover:bg-[#e5e5e5] text-[#1a1a1a] font-semibold"
+              >
+                Ocultar títulos
+              </button>
+            </div>
+
+            <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
+              {allPreviewCols.map((col) => {
+                const checked = !hiddenColumns.includes(col);
+                return (
+                  <label
+                    key={col}
+                    className="flex items-center gap-2 text-xs text-[#3d3d3d] hover:bg-[#f7f7f7] px-1.5 py-1 rounded cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleColumnVisibility(col)}
+                      className="rounded border-[#c2c2c2] text-[#024ad8]"
+                    />
+                    <span className="font-mono text-[11px] truncate">{col}</span>
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="border-t border-[#e8e8e8] pt-1.5">
+              <label className="flex items-center gap-2 text-[11px] text-[#3d3d3d] cursor-pointer px-1">
+                <input
+                  type="checkbox"
+                  checked={includeFileCol}
+                  onChange={(e) => handleToggleIncludeFile(e.target.checked)}
+                  className="rounded border-[#c2c2c2] text-[#024ad8]"
+                />
+                <span>
+                  Incluir columna <code className="font-mono font-bold">file</code> (SQLite)
+                </span>
+              </label>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Wrap / Full text toggle */}
+      <button
+        type="button"
+        onClick={() => setWrapTableCells((v) => !v)}
+        className={`hp-btn text-[11px] h-7 px-2.5 flex items-center gap-1 ${
+          wrapTableCells
+            ? "bg-[#e8f1ff] text-[#024ad8] border border-[#024ad8]/30"
+            : "hp-btn-outline-ink"
+        }`}
+        title="Alternar entre texto truncado o completo en celdas"
+      >
+        <WrapText className="w-3.5 h-3.5" />
+        <span className="hidden sm:inline">{wrapTableCells ? "Texto completo" : "Compacto"}</span>
+      </button>
+
+      {/* Expand height toggle */}
+      <button
+        type="button"
+        onClick={() => setExpandTableHeight((v) => !v)}
+        className={`hp-btn text-[11px] h-7 px-2.5 flex items-center gap-1 ${
+          expandTableHeight
+            ? "bg-[#e8f1ff] text-[#024ad8] border border-[#024ad8]/30"
+            : "hp-btn-outline-ink"
+        }`}
+        title="Expandir o contraer el alto de la tabla"
+      >
+        {expandTableHeight ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+        <span className="hidden sm:inline">{expandTableHeight ? "Contraer" : "Expandir"}</span>
+      </button>
+    </div>
+  );
+
+  const renderPreviewFooter = () => (
+    <div className="bg-[#f7f7f7] px-3 py-2 border-t border-[#e8e8e8] text-[11px] text-[#636363] flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span>
+          Mostrando{" "}
+          <strong>
+            {startRowNum.toLocaleString()}–{endRowNum.toLocaleString()}
+          </strong>{" "}
+          de <strong>{totalSqliteRows.toLocaleString()}</strong> filas en SQLite
+          {hiddenColumns.length > 0 && ` • ${visiblePreviewCols.length} de ${allPreviewCols.length} columnas`}
+        </span>
+      </div>
+
+      <div className="flex items-center gap-2">
+        {previewLimit > 0 && totalSqliteRows > previewLimit && (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => handlePagePreview(-1)}
+              disabled={!hasPrevPage || loadingPreview}
+              className="hp-btn hp-btn-outline-ink h-6 px-2 text-[11px] flex items-center gap-0.5 disabled:opacity-40"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+              <span>Anterior</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePagePreview(1)}
+              disabled={!hasNextPage || loadingPreview}
+              className="hp-btn hp-btn-outline-ink h-6 px-2 text-[11px] flex items-center gap-0.5 disabled:opacity-40"
+            >
+              <span>Siguiente</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+        {!includeFileCol && (
+          <span className="text-[10px] text-[#808080]">
+            Columna local <code>file</code> excluida para PostgreSQL.
+          </span>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="space-y-6">
@@ -510,7 +923,7 @@ export function MigrationView({ externalLogs = [] }) {
         <button
           onClick={() => {
             setActiveTab("preview");
-            generateDraftCode(selectedParent, selectedReport, selectedSqlite, chosenMetric, chosenUnit, chosenFactor, isMixed);
+            generateDraftCode(selectedParent, selectedReport, selectedSqlite, chosenMetric, customUnit || chosenUnit, chosenFactor, isMixed);
           }}
           className={`pb-3 text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5 transition-colors ${
             activeTab === "preview"
@@ -593,10 +1006,14 @@ export function MigrationView({ externalLogs = [] }) {
                   <label className="text-xs font-bold text-[#1a1a1a] block mb-1">Métrica Base:</label>
                   <select
                     value={chosenMetric}
-                    onChange={(e) => setChosenMetric(e.target.value)}
+                    onChange={(e) => {
+                      setChosenMetric(e.target.value);
+                      setUseAgentCode(false);
+                      setFormEditTick((t) => t + 1);
+                    }}
                     className="w-full px-3 py-2 text-xs border border-[#c2c2c2] rounded-[4px] bg-white outline-none"
                   >
-                    {metricOptions.map((m) => (
+                    {effectiveMetricOptions.map((m) => (
                       <option key={m} value={m}>
                         {m}
                       </option>
@@ -608,7 +1025,12 @@ export function MigrationView({ externalLogs = [] }) {
                   <label className="text-xs font-bold text-[#1a1a1a] block mb-1">Unidad Métrica Base:</label>
                   <select
                     value={chosenUnit}
-                    onChange={(e) => setChosenUnit(e.target.value)}
+                    onChange={(e) => {
+                      setChosenUnit(e.target.value);
+                      setCustomUnit("");
+                      setUseAgentCode(false);
+                      setFormEditTick((t) => t + 1);
+                    }}
                     className="w-full px-3 py-2 text-xs border border-[#c2c2c2] rounded-[4px] bg-white outline-none"
                   >
                     {commonUnits.map((u) => (
@@ -624,7 +1046,11 @@ export function MigrationView({ externalLogs = [] }) {
                   <input
                     type="text"
                     value={customUnit}
-                    onChange={(e) => setCustomUnit(e.target.value)}
+                    onChange={(e) => {
+                      setCustomUnit(e.target.value);
+                      setUseAgentCode(false);
+                      setFormEditTick((t) => t + 1);
+                    }}
                     placeholder="Ej: reclamos, unidades, GWh, etc."
                     className="w-full px-3 py-1.5 text-xs border border-[#c2c2c2] rounded-[4px] outline-none"
                   />
@@ -638,7 +1064,10 @@ export function MigrationView({ externalLogs = [] }) {
                     type="number"
                     step="1"
                     value={chosenFactor}
-                    onChange={(e) => setChosenFactor(parseFloat(e.target.value) || 1.0)}
+                    onChange={(e) => {
+                      setChosenFactor(parseFloat(e.target.value) || 1.0);
+                      setFormEditTick((t) => t + 1);
+                    }}
                     className="w-full px-3 py-2 text-xs border border-[#c2c2c2] rounded-[4px] outline-none font-mono"
                   />
                   <span className="text-[11px] text-[#636363] block mt-1">
@@ -651,7 +1080,10 @@ export function MigrationView({ externalLogs = [] }) {
                     <input
                       type="checkbox"
                       checked={isMixed}
-                      onChange={(e) => setIsMixed(e.target.checked)}
+                      onChange={(e) => {
+                        setIsMixed(e.target.checked);
+                        setFormEditTick((t) => t + 1);
+                      }}
                       className="accent-[#024ad8] w-4 h-4 mt-0.5"
                     />
                     <div>
@@ -688,7 +1120,7 @@ export function MigrationView({ externalLogs = [] }) {
               <button
                 onClick={() => {
                   setActiveTab("preview");
-                  generateDraftCode(selectedParent, selectedReport, selectedSqlite, chosenMetric, chosenUnit, chosenFactor, isMixed);
+                  generateDraftCode(selectedParent, selectedReport, selectedSqlite, chosenMetric, customUnit || chosenUnit, chosenFactor, isMixed);
                 }}
                 className="hp-btn hp-btn-primary text-xs"
               >
@@ -702,11 +1134,16 @@ export function MigrationView({ externalLogs = [] }) {
           <div className="hp-card p-6 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#e8e8e8]">
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Table className="w-4 h-4 text-[#024ad8]" />
                   <h3 className="font-bold text-sm text-[#1a1a1a]">
                     Vista Previa de Datos Simulada (PostgreSQL)
                   </h3>
+                  {(previewData?.sqlite_file || selectedSqlite) && (
+                    <span className="inline-block px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-blue-50 text-[#024ad8] border border-blue-200">
+                      {previewData?.sqlite_file || selectedSqlite.split(/[/\\]/).pop()}
+                    </span>
+                  )}
                   {previewData?.total_rows > 0 && (
                     <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-[#f0f0f0] text-[#3d3d3d] border border-[#e0e0e0]">
                       {previewData.total_rows.toLocaleString()} filas en SQLite
@@ -718,7 +1155,8 @@ export function MigrationView({ externalLogs = [] }) {
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {renderPreviewControls()}
                 <button
                   onClick={() => fetchPreviewTable()}
                   disabled={loadingPreview || !selectedSqlite}
@@ -731,7 +1169,7 @@ export function MigrationView({ externalLogs = [] }) {
                 <button
                   onClick={() => {
                     setActiveTab("preview");
-                    generateDraftCode(selectedParent, selectedReport, selectedSqlite, chosenMetric, chosenUnit, chosenFactor, isMixed);
+                    generateDraftCode(selectedParent, selectedReport, selectedSqlite, chosenMetric, customUnit || chosenUnit, chosenFactor, isMixed);
                   }}
                   className="hp-btn hp-btn-primary text-xs h-7 px-3 flex items-center gap-1.5"
                 >
@@ -748,14 +1186,14 @@ export function MigrationView({ externalLogs = [] }) {
               </div>
             ) : previewData?.rows && previewData.rows.length > 0 ? (
               <div className="border border-[#e8e8e8] rounded-[6px] overflow-hidden">
-                <div className="max-h-96 overflow-auto">
+                <div className={`${expandTableHeight ? "max-h-[75vh]" : "max-h-96"} overflow-auto transition-all`}>
                   <table className="w-full text-xs text-left border-collapse">
                     <thead className="bg-[#f7f7f7] text-[#1a1a1a] sticky top-0 border-b border-[#e8e8e8] z-10 select-none shadow-xs">
                       <tr>
                         <th className="py-2 px-3 font-semibold text-[#636363] text-[11px] uppercase tracking-wider w-10 text-center">
                           #
                         </th>
-                        {previewData.columns.map((col) => {
+                        {visiblePreviewCols.map((col) => {
                           const isMetric = col === "metrica_preview";
                           const isUnit = col === "unidad_preview";
                           const isVal = col === "valor";
@@ -780,9 +1218,9 @@ export function MigrationView({ externalLogs = [] }) {
                       {previewData.rows.map((row, idx) => (
                         <tr key={idx} className="hover:bg-[#f7f7f7] transition-colors">
                           <td className="py-1.5 px-3 text-[10px] text-center text-[#9e9e9e] font-mono">
-                            {idx + 1}
+                            {previewOffset + idx + 1}
                           </td>
-                          {previewData.columns.map((col) => {
+                          {visiblePreviewCols.map((col) => {
                             const val = row[col];
                             const isMetric = col === "metrica_preview";
                             const isUnit = col === "unidad_preview";
@@ -822,7 +1260,15 @@ export function MigrationView({ externalLogs = [] }) {
                               );
                             }
                             return (
-                              <td key={col} className="py-1.5 px-3 text-[#3d3d3d] whitespace-nowrap max-w-xs truncate" title={String(val || "")}>
+                              <td
+                                key={col}
+                                className={`py-1.5 px-3 text-[#3d3d3d] ${
+                                  wrapTableCells
+                                    ? "min-w-[160px] max-w-md whitespace-normal break-words"
+                                    : "whitespace-nowrap max-w-xs truncate"
+                                }`}
+                                title={String(val || "")}
+                              >
                                 {val || "-"}
                               </td>
                             );
@@ -832,10 +1278,7 @@ export function MigrationView({ externalLogs = [] }) {
                     </tbody>
                   </table>
                 </div>
-                <div className="bg-[#f7f7f7] px-3 py-2 border-t border-[#e8e8e8] text-[11px] text-[#636363] flex items-center justify-between">
-                  <span>Mostrando {previewData.rows.length} filas simuladas.</span>
-                  <span>Columna local <code>file</code> excluida para PostgreSQL.</span>
-                </div>
+                {renderPreviewFooter()}
               </div>
             ) : (
               <div className="py-8 text-center text-xs text-[#636363] border border-dashed border-[#c2c2c2] rounded-[6px]">
@@ -898,73 +1341,89 @@ export function MigrationView({ externalLogs = [] }) {
           {/* VISTA PREVIA DE LA TABLA EN TAB 2 */}
           {previewData?.rows?.length > 0 && (
             <div className="hp-card p-4 space-y-3">
-              <div className="flex items-center justify-between pb-2 border-b border-[#e8e8e8]">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-[#e8e8e8]">
                 <div className="flex items-center gap-2">
                   <Table className="w-4 h-4 text-[#024ad8]" />
                   <span className="text-xs font-bold uppercase text-[#1a1a1a]">Vista Previa de Filas y Clasificación de Hechos</span>
-                  <Badge variant="primary">{previewData.rows.length} filas simuladas</Badge>
+                  <Badge variant="primary">
+                    {previewData.rows.length} / {(previewData.total_rows || previewData.rows.length).toLocaleString()} filas
+                  </Badge>
                 </div>
-                <button
-                  onClick={() => fetchPreviewTable()}
-                  disabled={loadingPreview}
-                  className="hp-btn hp-btn-outline-ink text-xs h-6 px-2 flex items-center gap-1"
-                >
-                  <RefreshCw className={`w-3 h-3 ${loadingPreview ? "animate-spin" : ""}`} />
-                  <span>Recalcular</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  {renderPreviewControls()}
+                  <button
+                    onClick={() => fetchPreviewTable()}
+                    disabled={loadingPreview}
+                    className="hp-btn hp-btn-outline-ink text-xs h-7 px-2.5 flex items-center gap-1"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${loadingPreview ? "animate-spin" : ""}`} />
+                    <span>Recalcular</span>
+                  </button>
+                </div>
               </div>
 
-              <div className="border border-[#e8e8e8] rounded-[4px] overflow-hidden max-h-60 overflow-auto">
-                <table className="w-full text-xs text-left border-collapse">
-                  <thead className="bg-[#f7f7f7] text-[#1a1a1a] sticky top-0 border-b border-[#e8e8e8] z-10 select-none shadow-xs">
-                    <tr>
-                      <th className="py-1.5 px-2.5 font-semibold text-[#636363] text-[10px] uppercase w-8 text-center">#</th>
-                      {previewData.columns.map((col) => (
-                        <th key={col} className={`py-1.5 px-2.5 font-semibold text-[10px] uppercase whitespace-nowrap ${
-                          col.includes("preview") ? "bg-[#e8f1ff] text-[#024ad8]" : col === "valor" ? "text-right" : "text-[#3d3d3d]"
-                        }`}>
-                          {col}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#e8e8e8] bg-white">
-                    {previewData.rows.map((row, idx) => (
-                      <tr key={idx} className="hover:bg-[#f7f7f7]">
-                        <td className="py-1 px-2.5 text-[10px] text-center text-[#9e9e9e] font-mono">{idx + 1}</td>
-                        {previewData.columns.map((col) => {
-                          const val = row[col];
-                          if (col === "metrica_preview") {
-                            return (
-                              <td key={col} className="py-1 px-2.5 bg-[#f5f8ff] whitespace-nowrap">
-                                <span className="inline-block px-1.5 py-0.2 rounded text-[10px] font-semibold bg-[#024ad8]/10 text-[#024ad8]">{val || "-"}</span>
-                              </td>
-                            );
-                          }
-                          if (col === "unidad_preview") {
-                            return (
-                              <td key={col} className="py-1 px-2.5 bg-[#f5f8ff] whitespace-nowrap">
-                                <span className="inline-block px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-[#1a1a1a]/5 text-[#1a1a1a]">{val || "-"}</span>
-                              </td>
-                            );
-                          }
-                          if (col === "valor") {
-                            return (
-                              <td key={col} className="py-1 px-2.5 font-mono text-right font-semibold whitespace-nowrap">
-                                {val !== null && val !== undefined ? Number(val).toLocaleString() : "-"}
-                              </td>
-                            );
-                          }
-                          return (
-                            <td key={col} className="py-1 px-2.5 text-[#3d3d3d] whitespace-nowrap max-w-xs truncate" title={String(val || "")}>
-                              {val || "-"}
-                            </td>
-                          );
-                        })}
+              <div className="border border-[#e8e8e8] rounded-[4px] overflow-hidden">
+                <div className={`${expandTableHeight ? "max-h-[75vh]" : "max-h-60"} overflow-auto transition-all`}>
+                  <table className="w-full text-xs text-left border-collapse">
+                    <thead className="bg-[#f7f7f7] text-[#1a1a1a] sticky top-0 border-b border-[#e8e8e8] z-10 select-none shadow-xs">
+                      <tr>
+                        <th className="py-1.5 px-2.5 font-semibold text-[#636363] text-[10px] uppercase w-8 text-center">#</th>
+                        {visiblePreviewCols.map((col) => (
+                          <th key={col} className={`py-1.5 px-2.5 font-semibold text-[10px] uppercase whitespace-nowrap ${
+                            col.includes("preview") ? "bg-[#e8f1ff] text-[#024ad8]" : col === "valor" ? "text-right" : "text-[#3d3d3d]"
+                          }`}>
+                            {col}
+                          </th>
+                        ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-[#e8e8e8] bg-white">
+                      {previewData.rows.map((row, idx) => (
+                        <tr key={idx} className="hover:bg-[#f7f7f7]">
+                          <td className="py-1 px-2.5 text-[10px] text-center text-[#9e9e9e] font-mono">{previewOffset + idx + 1}</td>
+                          {visiblePreviewCols.map((col) => {
+                            const val = row[col];
+                            if (col === "metrica_preview") {
+                              return (
+                                <td key={col} className="py-1 px-2.5 bg-[#f5f8ff] whitespace-nowrap">
+                                  <span className="inline-block px-1.5 py-0.2 rounded text-[10px] font-semibold bg-[#024ad8]/10 text-[#024ad8]">{val || "-"}</span>
+                                </td>
+                              );
+                            }
+                            if (col === "unidad_preview") {
+                              return (
+                                <td key={col} className="py-1 px-2.5 bg-[#f5f8ff] whitespace-nowrap">
+                                  <span className="inline-block px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-[#1a1a1a]/5 text-[#1a1a1a]">{val || "-"}</span>
+                                </td>
+                              );
+                            }
+                            if (col === "valor") {
+                              return (
+                                <td key={col} className="py-1 px-2.5 font-mono text-right font-semibold whitespace-nowrap">
+                                  {val !== null && val !== undefined ? Number(val).toLocaleString() : "-"}
+                                </td>
+                              );
+                            }
+                            return (
+                              <td
+                                key={col}
+                                className={`py-1 px-2.5 text-[#3d3d3d] ${
+                                  wrapTableCells
+                                    ? "min-w-[160px] max-w-md whitespace-normal break-words"
+                                    : "whitespace-nowrap max-w-xs truncate"
+                                }`}
+                                title={String(val || "")}
+                              >
+                                {val || "-"}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {renderPreviewFooter()}
               </div>
             </div>
           )}
@@ -1209,9 +1668,18 @@ export function MigrationView({ externalLogs = [] }) {
           </div>
 
 
-          <TerminalLogs logs={[...externalLogs, ...localLogs]} title="Migration Deploy & Execution Console" />
+          <TerminalLogs
+            logs={[...externalLogs, ...localLogs]}
+            onClear={() => {
+              setLocalLogs([]);
+              if (onClearLogs) onClearLogs();
+            }}
+            title="Migration Deploy & Execution Console"
+          />
         </div>
       )}
+
+      <Toast toast={toast} onClose={() => setToast(null)} />
     </div>
   );
 }

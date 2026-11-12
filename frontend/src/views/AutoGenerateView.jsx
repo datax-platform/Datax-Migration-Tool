@@ -25,7 +25,7 @@ import { Badge } from "../components/ui/Badge";
 import { TerminalLogs } from "../components/ui/TerminalLogs";
 import { Toast } from "../components/ui/Toast";
 
-export function AutoGenerateView({ externalLogs = [], onNavigateTab }) {
+export function AutoGenerateView({ externalLogs = [], onClearLogs, onNavigateTab }) {
   const [tasks, setTasks] = useState([]);
   const [filteredTasks, setFilteredTasks] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -710,6 +710,10 @@ export function AutoGenerateView({ externalLogs = [], onNavigateTab }) {
 
             <TerminalLogs
               logs={[...externalLogs, ...localLogs]}
+              onClear={() => {
+                setLocalLogs([]);
+                if (onClearLogs) onClearLogs();
+              }}
               title="Taiga & Cognitive Loop Logs"
             />
           </div>

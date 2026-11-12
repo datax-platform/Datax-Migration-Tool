@@ -32,12 +32,12 @@ import { Badge } from "../components/ui/Badge";
 import { TerminalLogs } from "../components/ui/TerminalLogs";
 import { Toast } from "../components/ui/Toast";
 
-export function DownloadView({ externalLogs = [] }) {
+export function DownloadView({ externalLogs = [], onClearLogs }) {
   const [flowMode, setFlowMode] = useState("v2"); // Default to V2 as requested, options: "v1", "v2"
   const [v2SelectMode, setV2SelectMode] = useState("dropdown"); // "dropdown" or "manual"
   const [robots, setRobots] = useState([]);
-  const [selectedCode, setSelectedCode] = useState("D_BO_000000271");
-  const [manualCode, setManualCode] = useState("D_BO_000000271");
+  const [selectedCode, setSelectedCode] = useState("D_BO_000000XXX");
+  const [manualCode, setManualCode] = useState("D_BO_000000XXX");
   const [detail, setDetail] = useState(null);
   const [activeSubTab, setActiveSubTab] = useState("code"); // "code", "test", "deploy"
   const [loading, setLoading] = useState(false);
@@ -63,7 +63,7 @@ export function DownloadView({ externalLogs = [] }) {
 
   // Options
   const [skipTest, setSkipTest] = useState(false);
-  const [generateDag, setGenerateDag] = useState(true);
+  const [generateDag, setGenerateDag] = useState(false);
   const [testDate, setTestDate] = useState("2024-01-01");
   const [dbDateInput, setDbDateInput] = useState("2024-01-01");
 
@@ -361,12 +361,23 @@ export function DownloadView({ externalLogs = [] }) {
         new_date: dbDateInput,
       });
       setLocalLogs((prev) => [...prev, `[DB] ${res.data.message}`]);
+      setToast({
+        type: "success",
+        title: "Fecha Actualizada",
+        message: res.data.message || `Fecha actualizada en BD para ${selectedCode}.`,
+      });
       loadDetail(selectedCode);
     } catch (e) {
+      const err = e.response?.data?.detail || e.message;
       setLocalLogs((prev) => [
         ...prev,
-        `[DB ERROR] Error actualizando fecha: ${e.message}`,
+        `[DB ERROR] Error actualizando fecha: ${err}`,
       ]);
+      setToast({
+        type: "error",
+        title: "Error actualizando BD",
+        message: err,
+      });
     }
   };
 
@@ -466,6 +477,11 @@ export function DownloadView({ externalLogs = [] }) {
         ...prev,
         `[Portapapeles] Código de ${selectedCode} copiado.`,
       ]);
+      setToast({
+        type: "success",
+        title: "Código Copiado",
+        message: `Código de ${selectedCode} copiado al portapapeles.`,
+      });
     }
   };
 
@@ -1219,7 +1235,14 @@ export function DownloadView({ externalLogs = [] }) {
       )}
 
       {/* Terminal Logs Console */}
-      <TerminalLogs logs={[...externalLogs, ...localLogs]} title="Download Process Output" />
+      <TerminalLogs
+        logs={[...externalLogs, ...localLogs]}
+        onClear={() => {
+          setLocalLogs([]);
+          if (onClearLogs) onClearLogs();
+        }}
+        title="Download Process Output"
+      />
 
       {/* Modern Toast Notification */}
       <Toast toast={toast} onClose={() => setToast(null)} />

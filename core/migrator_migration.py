@@ -6,6 +6,7 @@ import sqlite3
 import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
+import numpy as np
 from sqlalchemy import text
 from core.agent_analyzer import parse_commodity_price_unit
 
@@ -924,7 +925,9 @@ def generate_migration_preview_data(
     is_mixed: bool = False,
     custom_metric_code: str = "",
     custom_unit_code: str = "",
-    limit: int = 50
+    limit: int = 100,
+    offset: int = 0,
+    include_file: bool = False
 ) -> dict:
     """Genera la vista previa simulada de los datos SQLite con las columnas metrica_preview y unidad_preview."""
     if not os.path.isfile(sqlite_path):
@@ -955,10 +958,15 @@ def generate_migration_preview_data(
         except Exception:
             total_rows = 0
 
-        df = pd.read_sql_query(f'SELECT * FROM "{table_name}" LIMIT {int(limit)};', conn)
+        safe_limit = int(limit) if limit is not None else 100
+        safe_offset = max(0, int(offset) if offset is not None else 0)
+        if safe_limit > 0:
+            df = pd.read_sql_query(f'SELECT * FROM "{table_name}" LIMIT {safe_limit} OFFSET {safe_offset};', conn)
+        else:
+            df = pd.read_sql_query(f'SELECT * FROM "{table_name}";', conn)
 
     df.columns = [standardize_col_name(c) if str(c).lower().strip() != "file" else "file" for c in df.columns]
-    if "file" in df.columns:
+    if not include_file and "file" in df.columns:
         df = df.drop(columns=["file"])
 
     title_cols = [c for c in df.columns if c.startswith("titulo")]
@@ -1040,20 +1048,34 @@ def generate_migration_preview_data(
                     return "BOB"
             return unit
 
+        default_get_metric = preview_get_metric
+        default_get_unit = preview_get_unit
+
         if custom_metric_code and custom_unit_code:
             try:
                 agent_ns = {}
-                exec(custom_metric_code, {"pd": pd, "re": re}, agent_ns)
-                exec(custom_unit_code, {"pd": pd, "re": re}, agent_ns)
+                exec_globals = {"pd": pd, "re": re, "np": np}
+                exec(custom_metric_code, exec_globals, agent_ns)
+                exec(custom_unit_code, exec_globals, agent_ns)
                 if "get_metric" in agent_ns and "get_unit" in agent_ns:
                     preview_get_metric = agent_ns["get_metric"]
                     preview_get_unit = agent_ns["get_unit"]
             except Exception:
                 pass
 
+        try:
+            metric_series = preview_df.apply(preview_get_metric, axis=1)
+        except Exception:
+            metric_series = preview_df.apply(default_get_metric, axis=1)
+
+        try:
+            unit_series = preview_df.apply(preview_get_unit, axis=1)
+        except Exception:
+            unit_series = preview_df.apply(default_get_unit, axis=1)
+
         idx_val = preview_df.columns.get_loc("valor") if "valor" in preview_df.columns else len(preview_df.columns)
-        preview_df.insert(idx_val, "metrica_preview", preview_df.apply(preview_get_metric, axis=1))
-        preview_df.insert(idx_val + 1, "unidad_preview", preview_df.apply(preview_get_unit, axis=1))
+        preview_df.insert(idx_val, "metrica_preview", metric_series)
+        preview_df.insert(idx_val + 1, "unidad_preview", unit_series)
     else:
         idx_val = preview_df.columns.get_loc("valor") if "valor" in preview_df.columns else len(preview_df.columns)
         preview_df.insert(idx_val, "metrica_preview", metric)
@@ -1076,5 +1098,12 @@ def generate_migration_preview_data(
     return {
         "columns": list(preview_df.columns),
         "rows": clean_rows,
-        "total_rows": total_rows
+        "total_rows": total_rows,
+        "limit": safe_limit,
+        "offset": safe_offset,
+        "sqlite_file": os.path.basename(sqlite_path),
+        "table_name": table_name,
+        "applied_metric": metric,
+        "applied_unit": unit,
+        "is_mixed": is_mixed,
     }

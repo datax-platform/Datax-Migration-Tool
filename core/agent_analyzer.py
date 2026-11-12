@@ -62,33 +62,33 @@ def parse_commodity_price_unit(text: str) -> str:
         curr = "BRL"
 
     phys = ""
-    if any(k in t for k in ["tonne", "tonelada", "tm", "ton", "mt"]):
+    if re.search(r"\b(?:tonne|tonnes|tonelada|toneladas|tm|ton|mt)\b", t):
         phys = "Tn"
-    elif any(k in t for k in ["kg", "kilo", "kilogramo", "kgs"]):
+    elif re.search(r"\b(?:kg|kilo|kilogramo|kilogramos|kgs)\b", t):
         phys = "Kg"
-    elif any(k in t for k in ["barril", "bbl", "barriles"]):
+    elif re.search(r"\b(?:barril|barriles|bbl)\b", t):
         phys = "Bbl"
-    elif any(k in t for k in ["libra", "lb", "lf", "lbs"]):
+    elif re.search(r"\b(?:libra|libras|lb|lf|lbs)\b", t):
         phys = "lb"
-    elif any(k in t for k in ["onza", "oz", "ot", "onzas"]):
+    elif re.search(r"\b(?:onza|onzas|oz|o\.t\.f\.?|otf)\b", t):
         phys = "Oz"
-    elif any(k in t for k in ["mmbtu", "mbtu"]):
+    elif re.search(r"\b(?:mmbtu|mbtu)\b", t):
         phys = "MMBTU"
-    elif any(k in t for k in ["litro", "litros", "lt", "lts"]):
+    elif re.search(r"\b(?:litro|litros|lt|lts)\b", t):
         phys = "litro"
-    elif any(k in t for k in ["quintal", "qq"]):
+    elif re.search(r"\b(?:quintal|quintales|qq)\b", t):
         phys = "qq"
-    elif "mwh" in t:
+    elif re.search(r"\bmwh\b", t):
         phys = "MWh"
-    elif "kwh" in t:
-        phys = "kWh" 
+    elif re.search(r"\bkwh\b", t):
+        phys = "kWh"
 
     if curr and phys:
         return f"{curr}/{phys}"
     return ""
 
 
-def extract_sqlite_summary_for_agent(sqlite_path: str) -> Dict[str, Any]:
+def extract_sqlite_summary_for_agent(sqlite_path: str, target_table: str = "") -> Dict[str, Any]:
     """
     Extrae un resumen estadístico, categórico y muestral completo del SQLite para alimentar al Agente IA.
     Garantiza CERO omisiones al extraer categorías completas mediante SELECT DISTINCT sobre toda la tabla.
@@ -103,7 +103,12 @@ def extract_sqlite_summary_for_agent(sqlite_path: str) -> Dict[str, Any]:
         if not tables:
             return {"error": "No se encontraron tablas válidas en el archivo SQLite."}
 
-        table_name = tables[0]
+        if target_table and target_table in tables:
+            table_name = target_table
+        elif "data_melted" in tables:
+            table_name = "data_melted"
+        else:
+            table_name = tables[0]
         cursor.execute(f'PRAGMA table_info("{table_name}");')
         pragma_cols = [row[1] for row in cursor.fetchall()]
 
@@ -625,6 +630,24 @@ def validate_and_sanitize_agent_result(
     """
     categories = sqlite_summary.get("categories_summary", {})
     all_title_text = _flatten_titles(sqlite_summary.get("titles", {}))
+    all_cat_text = " ".join([" ".join(v) for v in categories.values()]).lower()
+
+    is_fx_report = (
+        parsed.get("base_metric") == "tipo_cambio"
+        or any(
+            k in all_title_text or k in all_cat_text
+            for k in [
+                "tipo de cambio",
+                "tabla de cotizaciones",
+                "cotizacion oficial",
+                "cotización oficial",
+                "cotizacion de monedas",
+                "cotización de monedas",
+                "cotizacion de ufv",
+                "cotización de ufv",
+            ]
+        )
+    )
 
     # 1. Detectar unidades de precios de commodities / materias primas
     price_units_detected = sqlite_summary.get("pre_detected_price_units", {})
@@ -635,11 +658,15 @@ def validate_and_sanitize_agent_result(
                 if parsed_u:
                     price_units_detected[v] = parsed_u
 
-    is_commodity_report = bool(price_units_detected) or any(
-        k in all_title_text for k in ["futures", "futuros", "daily price", "cacao", "cocoa", "wti", "brent", "petroleo", "petróleo"]
+    is_commodity_report = (not is_fx_report) and (
+        bool(price_units_detected)
+        or any(
+            k in all_title_text
+            for k in ["futures", "futuros", "daily price", "cacao", "cocoa", "wti", "brent", "petroleo", "petróleo"]
+        )
     )
 
-    if price_units_detected or is_commodity_report:
+    if is_commodity_report:
         first_unit = list(price_units_detected.values())[0] if price_units_detected else "USD/Tn"
 
         # Corrección métrica a 'precio'
@@ -658,15 +685,11 @@ def validate_and_sanitize_agent_result(
 
         # Verificación estricta de get_unit_code:
         unit_code = parsed.get("get_unit_code", "")
-        has_euro_cat = any("EUR" in u for u in price_units_detected.values())
-        has_gbp_cat = any("GBP" in u for u in price_units_detected.values())
-        has_usd_cat = any("USD" in u for u in price_units_detected.values())
+        detected_unit_set = set(price_units_detected.values())
 
         needs_unit_code_fix = (
             not any("/" in line for line in unit_code.splitlines() if "return" in line)
-            or (has_euro_cat and "EUR/Tn" not in unit_code)
-            or (has_gbp_cat and "GBP/Tn" not in unit_code)
-            or (has_usd_cat and "USD/Tn" not in unit_code)
+            or any(u not in unit_code for u in detected_unit_set)
         )
 
         if needs_unit_code_fix and price_units_detected:
@@ -679,17 +702,21 @@ def validate_and_sanitize_agent_result(
                 clean_v = raw_v.lower().replace("'", "\\'")
                 lines.append(f"    if '{clean_v}' in combined:")
                 lines.append(f"        return '{u}'")
-            # Reglas generales por palabras clave:
-            lines.append("    if any(k in combined for k in ['euro', 'eur', '€']):")
-            lines.append("        return 'EUR/Tn'")
-            lines.append("    if any(k in combined for k in ['£', 'sterling', 'gbp']):")
-            lines.append("        return 'GBP/Tn'")
-            lines.append("    if any(k in combined for k in ['us$', '$us', 'usd', 'dolar', 'dólar']):")
-            lines.append("        return 'USD/Tn'")
+            # Reglas generales por palabras clave solo usando las unidades detectadas:
+            for u in sorted(detected_unit_set):
+                if u.startswith("EUR/"):
+                    lines.append("    if any(k in combined for k in ['euro', 'eur', '€']):")
+                    lines.append(f"        return '{u}'")
+                elif u.startswith("GBP/"):
+                    lines.append("    if any(k in combined for k in ['£', 'sterling', 'gbp']):")
+                    lines.append(f"        return '{u}'")
+                elif u.startswith("USD/"):
+                    lines.append("    if any(k in combined for k in ['us$', '$us', 'usd', 'dolar', 'dólar']):")
+                    lines.append(f"        return '{u}'")
             lines.append(f"    return '{first_unit}'")
             parsed["get_unit_code"] = "\n".join(lines)
             parsed["get_metric_code"] = "def get_metric(row) -> str:\n    return 'precio'"
-            parsed["is_mixed"] = len(set(price_units_detected.values())) > 1
+            parsed["is_mixed"] = len(detected_unit_set) > 1
 
     # 3. Salvaguarda Oficial DATAX para Balances con Coeficientes / Ratios / Porcentajes (ej. Robot 321)
     has_coef_or_ratio = False
@@ -757,14 +784,15 @@ def validate_and_sanitize_agent_result(
 def run_agent_sqlite_analysis(
     sqlite_path: str,
     api_key: str = "",
-    model_name: str = ""
+    model_name: str = "",
+    report_code: str = ""
 ) -> Dict[str, Any]:
     """
     Función principal ejecutora:
     Extrae resumen del SQLite y ejecuta Gemini API con auto-descubrimiento de modelos.
     Si no hay API key o hay error de red/cuota, utiliza el motor heurístico avanzado de respaldo.
     """
-    summary = extract_sqlite_summary_for_agent(sqlite_path)
+    summary = extract_sqlite_summary_for_agent(sqlite_path, target_table=report_code)
     if "error" in summary:
         return summary
 

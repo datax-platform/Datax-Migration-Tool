@@ -38,14 +38,21 @@ import {
   Pencil,
   Code2,
   Globe,
+  Columns3,
+  ChevronLeft,
+  ChevronRight,
+  Maximize2,
+  Minimize2,
+  WrapText,
 } from "lucide-react";
 import Editor from "@monaco-editor/react";
 import { api } from "../services/api";
 import { Badge } from "../components/ui/Badge";
 import { TerminalLogs } from "../components/ui/TerminalLogs";
 import { Toast } from "../components/ui/Toast";
+import { ConfirmModal } from "../components/ui/ConfirmModal";
 
-export function ConversionView({ externalLogs = [] }) {
+export function ConversionView({ externalLogs = [], onClearLogs }) {
   // Flow mode: "v1" (Migrar desde legado) or "v2" (Desarrollado en V2)
   const [convFlowMode, setConvFlowMode] = useState("v1");
 
@@ -69,6 +76,8 @@ export function ConversionView({ externalLogs = [] }) {
   const [downloadingPrFilename, setDownloadingPrFilename] = useState(null);
   const [refactoringCode, setRefactoringCode] = useState(false);
   const [toast, setToast] = useState(null);
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const [confirmLoading, setConfirmLoading] = useState(false);
 
   // Families & Reports
   const [families, setFamilies] = useState([]);
@@ -101,6 +110,12 @@ export function ConversionView({ externalLogs = [] }) {
   const [auditSubTab, setAuditSubTab] = useState("sqlite");
   const [sqliteData, setSqliteData] = useState(null);
   const [loadingSqlite, setLoadingSqlite] = useState(false);
+  const [sqliteLimit, setSqliteLimit] = useState(100);
+  const [sqliteOffset, setSqliteOffset] = useState(0);
+  const [sqliteHiddenCols, setSqliteHiddenCols] = useState([]);
+  const [showSqliteColMenu, setShowSqliteColMenu] = useState(false);
+  const [expandSqliteHeight, setExpandSqliteHeight] = useState(false);
+  const [wrapSqliteCells, setWrapSqliteCells] = useState(false);
   const [savingReplacements, setSavingReplacements] = useState(false);
   const [selectedReviewCols, setSelectedReviewCols] = useState([]);
   const [settingUpColumns, setSettingUpColumns] = useState(false);
@@ -325,7 +340,11 @@ export function ConversionView({ externalLogs = [] }) {
         handleSelectPr(res.data.prs[0].number);
       }
     } catch (e) {
-      alert("Error consultando GitHub: " + (e.response?.data?.detail || e.message));
+      setToast({
+        type: "error",
+        title: "Error Consultando GitHub",
+        message: e.response?.data?.detail || e.message,
+      });
     } finally {
       setLoadingPrs(false);
     }
@@ -679,10 +698,12 @@ export function ConversionView({ externalLogs = [] }) {
     fetchSshConfigFromEnv();
   }, []);
 
-  const loadSqlite = async (code) => {
+  const loadSqlite = async (code, options = {}) => {
+    if (!code) return;
+    const { limit = sqliteLimit, offset = sqliteOffset } = options;
     setLoadingSqlite(true);
     try {
-      const res = await api.get(`/conversion/sqlite-data/${code}`);
+      const res = await api.get(`/conversion/sqlite-data/${code}?limit=${limit}&offset=${offset}`);
       setSqliteData(res.data);
     } catch (e) {
       console.error("Error loading sqlite:", e);
@@ -691,6 +712,12 @@ export function ConversionView({ externalLogs = [] }) {
       setLoadingSqlite(false);
     }
   };
+
+  useEffect(() => {
+    setSqliteOffset(0);
+    setSqliteHiddenCols([]);
+    setShowSqliteColMenu(false);
+  }, [selectedSubReport]);
 
   const loadReplacements = async (code, searchVal = "") => {
     try {
@@ -726,19 +753,46 @@ export function ConversionView({ externalLogs = [] }) {
     }
   };
 
-  const handleDeleteReplacement = async (id) => {
-    if (!window.confirm("¿Seguro que deseas eliminar este reemplazo?")) return;
-    try {
-      const res = await api.post("/conversion/replacements/delete", {
-        report_code: selectedSubReport,
-        record_id: id,
-      });
-      if (res.data.success) {
-        loadReplacements(selectedSubReport);
-      }
-    } catch (e) {
-      console.error(e);
-    }
+  const handleDeleteReplacement = (id) => {
+    setConfirmDialog({
+      title: "Eliminar Reemplazo",
+      message: "¿Seguro que deseas eliminar este reemplazo? Esta acción modificará la tabla DATA_DB_BO_AUX.",
+      confirmText: "Sí, Eliminar",
+      variant: "danger",
+      onConfirm: async () => {
+        setConfirmLoading(true);
+        try {
+          const res = await api.post("/conversion/replacements/delete", {
+            report_code: selectedSubReport,
+            record_id: id,
+          });
+          if (res.data.success) {
+            setToast({
+              type: "success",
+              title: "Reemplazo Eliminado",
+              message: "El registro fue eliminado correctamente.",
+            });
+            loadReplacements(selectedSubReport);
+          } else {
+            setToast({
+              type: "error",
+              title: "No se pudo eliminar",
+              message: res.data.message || "Error eliminando el reemplazo.",
+            });
+          }
+        } catch (e) {
+          console.error(e);
+          setToast({
+            type: "error",
+            title: "Error al Eliminar",
+            message: e.response?.data?.detail || e.message,
+          });
+        } finally {
+          setConfirmLoading(false);
+          setConfirmDialog(null);
+        }
+      },
+    });
   };
 
   const formatToTitleCase = (text) => {
@@ -945,7 +999,11 @@ export function ConversionView({ externalLogs = [] }) {
 
   const handleDeployConversion = async () => {
     if (!sshPass) {
-      alert("Por favor introduce la contraseña del servidor SSH.");
+      setToast({
+        type: "warning",
+        title: "Contraseña Requerida",
+        message: "Por favor introduce la contraseña del servidor SSH.",
+      });
       return;
     }
     setDeploying(true);
@@ -978,7 +1036,11 @@ export function ConversionView({ externalLogs = [] }) {
 
   const handleTriggerConversionDag = async () => {
     if (!sshPass) {
-      alert("Por favor introduce la contraseña del servidor SSH para conectar.");
+      setToast({
+        type: "warning",
+        title: "Contraseña Requerida",
+        message: "Por favor introduce la contraseña del servidor SSH para conectar.",
+      });
       return;
     }
     setTriggeringDag(true);
@@ -1710,7 +1772,14 @@ export function ConversionView({ externalLogs = [] }) {
             </div>
           </div>
 
-          <TerminalLogs logs={[...externalLogs, ...localLogs]} title="Conversion Step Test Console" />
+          <TerminalLogs
+            logs={[...externalLogs, ...localLogs]}
+            onClear={() => {
+              setLocalLogs([]);
+              if (onClearLogs) onClearLogs();
+            }}
+            title="Conversion Step Test Console"
+          />
         </div>
       )}
 
@@ -1754,62 +1823,264 @@ export function ConversionView({ externalLogs = [] }) {
               <Badge variant="outline">{selectedSubReport}</Badge>
             </div>
 
-            {auditSubTab === "sqlite" ? (
-              <div className="space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#f7f7f7] p-3 rounded-[6px] border border-[#e8e8e8]">
-                  <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <span className="font-bold text-[#1a1a1a]">Tabla en SQLite:</span>
-                    <Badge variant="primary">{sqliteData?.table || selectedSubReport}</Badge>
-                    <span className="text-[#636363]">
-                      • Total registros: <strong>{sqliteData?.total || 0}</strong> filas
-                    </span>
-                    {sqliteData?.path && (
-                      <span className="text-[11px] text-slate-500 font-mono hidden md:inline truncate max-w-xs" title={sqliteData.path}>
-                        ({sqliteData.path.split(/[\/]/).pop()})
-                      </span>
-                    )}
-                  </div>
-                  <button
-                    onClick={() => loadSqlite(selectedSubReport)}
-                    disabled={loadingSqlite}
-                    className="hp-btn hp-btn-outline-ink text-xs h-7 px-3 flex items-center gap-1.5 self-start sm:self-auto"
-                  >
-                    <RefreshCw className={`w-3 h-3 ${loadingSqlite ? "animate-spin" : ""}`} />
-                    <span>{loadingSqlite ? "Cargando..." : "Recargar SQLite"}</span>
-                  </button>
-                </div>
+            {auditSubTab === "sqlite" ? (() => {
+              const allSqliteCols = sqliteData?.columns || [];
+              const visibleSqliteCols = allSqliteCols.filter((c) => !sqliteHiddenCols.includes(c));
+              const totalRows = sqliteData?.total || 0;
+              const rowsCount = sqliteData?.data?.length || 0;
+              const startRow = rowsCount > 0 ? sqliteOffset + 1 : 0;
+              const endRow = sqliteOffset + rowsCount;
+              const hasPrev = sqliteOffset > 0 && sqliteLimit > 0;
+              const hasNext = sqliteLimit > 0 && sqliteOffset + rowsCount < totalRows;
 
-                {loadingSqlite ? (
-                  <div className="p-12 text-center text-xs text-[#636363] flex flex-col items-center justify-center gap-2">
-                    <RefreshCw className="w-5 h-5 animate-spin text-[#024ad8]" />
-                    <span>Cargando datos desde archivo SQLite...</span>
+              return (
+                <div className="space-y-4">
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-[#f7f7f7] p-3 rounded-[6px] border border-[#e8e8e8]">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="font-bold text-[#1a1a1a]">Tabla en SQLite:</span>
+                      <Badge variant="primary">{sqliteData?.table || selectedSubReport}</Badge>
+                      <span className="text-[#636363]">
+                        • Total registros: <strong>{totalRows.toLocaleString()}</strong> filas
+                      </span>
+                      {sqliteData?.path && (
+                        <span className="text-[11px] text-slate-500 font-mono hidden md:inline truncate max-w-xs" title={sqliteData.path}>
+                          ({sqliteData.path.split(/[\/]/).pop()})
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* Selector de filas */}
+                      <div className="flex items-center gap-1.5 bg-white border border-[#dcdcdc] rounded-[4px] px-2 h-7">
+                        <span className="text-[11px] font-semibold text-[#636363]">Filas:</span>
+                        <select
+                          value={sqliteLimit}
+                          onChange={(e) => {
+                            const nextLimit = Number(e.target.value);
+                            setSqliteLimit(nextLimit);
+                            setSqliteOffset(0);
+                            loadSqlite(selectedSubReport, { limit: nextLimit, offset: 0 });
+                          }}
+                          disabled={loadingSqlite}
+                          className="text-[11px] font-bold text-[#1a1a1a] bg-transparent outline-none cursor-pointer"
+                          title="Cantidad de filas a mostrar desde SQLite"
+                        >
+                          <option value={50}>50</option>
+                          <option value={100}>100</option>
+                          <option value={250}>250</option>
+                          <option value={500}>500</option>
+                          <option value={1000}>1,000</option>
+                          <option value={0}>Todas</option>
+                        </select>
+                      </div>
+
+                      {/* Selector de columnas */}
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => setShowSqliteColMenu((v) => !v)}
+                          disabled={!allSqliteCols.length}
+                          className="hp-btn hp-btn-outline-ink text-[11px] h-7 px-2.5 flex items-center gap-1.5 bg-white"
+                          title="Mostrar u ocultar columnas de la tabla"
+                        >
+                          <Columns3 className="w-3.5 h-3.5" />
+                          <span>
+                            Columnas ({visibleSqliteCols.length}/{allSqliteCols.length})
+                          </span>
+                        </button>
+
+                        {showSqliteColMenu && allSqliteCols.length > 0 && (
+                          <div className="absolute right-0 mt-1 w-64 bg-white border border-[#dcdcdc] rounded-[6px] shadow-lg z-30 p-2.5 space-y-2">
+                            <div className="flex items-center justify-between border-b border-[#e8e8e8] pb-1.5">
+                              <span className="text-[11px] font-bold text-[#1a1a1a] uppercase">
+                                Columnas visibles
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setShowSqliteColMenu(false)}
+                                className="text-[10px] font-semibold text-[#636363] hover:text-[#1a1a1a]"
+                              >
+                                Cerrar
+                              </button>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setSqliteHiddenCols([])}
+                                className="text-[10px] px-2 py-0.5 rounded bg-[#f0f0f0] hover:bg-[#e5e5e5] text-[#1a1a1a] font-semibold"
+                              >
+                                Mostrar todas
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setSqliteHiddenCols(allSqliteCols.filter((c) => c.toLowerCase().startsWith("titulo")))
+                                }
+                                className="text-[10px] px-2 py-0.5 rounded bg-[#f0f0f0] hover:bg-[#e5e5e5] text-[#1a1a1a] font-semibold"
+                              >
+                                Ocultar títulos
+                              </button>
+                            </div>
+                            <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
+                              {allSqliteCols.map((col) => {
+                                const checked = !sqliteHiddenCols.includes(col);
+                                return (
+                                  <label
+                                    key={col}
+                                    className="flex items-center gap-2 text-xs text-[#3d3d3d] hover:bg-[#f7f7f7] px-1.5 py-1 rounded cursor-pointer"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      onChange={() =>
+                                        setSqliteHiddenCols((prev) =>
+                                          prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col]
+                                        )
+                                      }
+                                      className="rounded border-[#c2c2c2] text-[#024ad8]"
+                                    />
+                                    <span className="font-mono text-[11px] truncate">{col}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Texto completo */}
+                      <button
+                        type="button"
+                        onClick={() => setWrapSqliteCells((v) => !v)}
+                        className={`hp-btn text-[11px] h-7 px-2.5 flex items-center gap-1 ${
+                          wrapSqliteCells
+                            ? "bg-[#e8f1ff] text-[#024ad8] border border-[#024ad8]/30"
+                            : "hp-btn-outline-ink bg-white"
+                        }`}
+                        title="Alternar entre texto compacto o completo en celdas"
+                      >
+                        <WrapText className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">{wrapSqliteCells ? "Texto completo" : "Compacto"}</span>
+                      </button>
+
+                      {/* Expandir alto */}
+                      <button
+                        type="button"
+                        onClick={() => setExpandSqliteHeight((v) => !v)}
+                        className={`hp-btn text-[11px] h-7 px-2.5 flex items-center gap-1 ${
+                          expandSqliteHeight
+                            ? "bg-[#e8f1ff] text-[#024ad8] border border-[#024ad8]/30"
+                            : "hp-btn-outline-ink bg-white"
+                        }`}
+                        title="Expandir o contraer el alto de la tabla"
+                      >
+                        {expandSqliteHeight ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+                        <span className="hidden sm:inline">{expandSqliteHeight ? "Contraer" : "Expandir"}</span>
+                      </button>
+
+                      <button
+                        onClick={() => loadSqlite(selectedSubReport)}
+                        disabled={loadingSqlite}
+                        className="hp-btn hp-btn-outline-ink text-xs h-7 px-3 flex items-center gap-1.5 bg-white"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${loadingSqlite ? "animate-spin" : ""}`} />
+                        <span>{loadingSqlite ? "Cargando..." : "Recargar SQLite"}</span>
+                      </button>
+                    </div>
                   </div>
-                ) : sqliteData?.data?.length > 0 ? (
-                  <div className="overflow-x-auto border border-[#e8e8e8] rounded-[4px] max-h-96 shadow-xs">
-                    <table className="w-full text-xs text-left">
-                      <thead className="bg-[#f7f7f7] border-b border-[#e8e8e8] text-[#1a1a1a] font-bold sticky top-0 z-10">
-                        <tr>
-                          {sqliteData.columns.map((c) => (
-                            <th key={c} className="p-2.5 font-semibold text-[#1a1a1a] bg-[#f7f7f7]">
-                              {c}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-[#e8e8e8] bg-white">
-                        {sqliteData.data.slice(0, 100).map((row, i) => (
-                          <tr key={i} className="hover:bg-blue-50/40 transition-colors">
-                            {sqliteData.columns.map((c) => (
-                              <td key={c} className="p-2.5 text-[#3d3d3d] font-mono whitespace-nowrap">
-                                {String(row[c] ?? "-")}
-                              </td>
+
+                  {loadingSqlite ? (
+                    <div className="p-12 text-center text-xs text-[#636363] flex flex-col items-center justify-center gap-2">
+                      <RefreshCw className="w-5 h-5 animate-spin text-[#024ad8]" />
+                      <span>Cargando datos desde archivo SQLite...</span>
+                    </div>
+                  ) : sqliteData?.data?.length > 0 ? (
+                    <div className="border border-[#e8e8e8] rounded-[4px] overflow-hidden shadow-xs">
+                      <div className={`overflow-auto ${expandSqliteHeight ? "max-h-[75vh]" : "max-h-96"} transition-all`}>
+                        <table className="w-full text-xs text-left border-collapse">
+                          <thead className="bg-[#f7f7f7] border-b border-[#e8e8e8] text-[#1a1a1a] font-bold sticky top-0 z-10">
+                            <tr>
+                              <th className="p-2.5 font-semibold text-[#636363] text-[10px] uppercase w-10 text-center bg-[#f7f7f7]">
+                                #
+                              </th>
+                              {visibleSqliteCols.map((c) => (
+                                <th key={c} className="p-2.5 font-semibold text-[#1a1a1a] bg-[#f7f7f7] whitespace-nowrap">
+                                  {c}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-[#e8e8e8] bg-white">
+                            {sqliteData.data.map((row, i) => (
+                              <tr key={i} className="hover:bg-blue-50/40 transition-colors">
+                                <td className="p-2.5 text-[10px] text-center text-[#9e9e9e] font-mono">
+                                  {sqliteOffset + i + 1}
+                                </td>
+                                {visibleSqliteCols.map((c) => {
+                                  const val = row[c] ?? "-";
+                                  return (
+                                    <td
+                                      key={c}
+                                      className={`p-2.5 text-[#3d3d3d] font-mono ${
+                                        wrapSqliteCells
+                                          ? "min-w-[160px] max-w-md whitespace-normal break-words"
+                                          : "whitespace-nowrap max-w-xs truncate"
+                                      }`}
+                                      title={String(val)}
+                                    >
+                                      {String(val)}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
                             ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="bg-[#f7f7f7] px-3 py-2 border-t border-[#e8e8e8] text-[11px] text-[#636363] flex flex-wrap items-center justify-between gap-2">
+                        <span>
+                          Mostrando{" "}
+                          <strong>
+                            {startRow.toLocaleString()}–{endRow.toLocaleString()}
+                          </strong>{" "}
+                          de <strong>{totalRows.toLocaleString()}</strong> filas
+                          {sqliteHiddenCols.length > 0 && ` • ${visibleSqliteCols.length} de ${allSqliteCols.length} columnas`}
+                        </span>
+
+                        {sqliteLimit > 0 && totalRows > sqliteLimit && (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const nextOffset = Math.max(0, sqliteOffset - sqliteLimit);
+                                setSqliteOffset(nextOffset);
+                                loadSqlite(selectedSubReport, { limit: sqliteLimit, offset: nextOffset });
+                              }}
+                              disabled={!hasPrev || loadingSqlite}
+                              className="hp-btn hp-btn-outline-ink h-6 px-2 text-[11px] flex items-center gap-0.5 bg-white disabled:opacity-40"
+                            >
+                              <ChevronLeft className="w-3.5 h-3.5" />
+                              <span>Anterior</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const nextOffset = sqliteOffset + sqliteLimit;
+                                setSqliteOffset(nextOffset);
+                                loadSqlite(selectedSubReport, { limit: sqliteLimit, offset: nextOffset });
+                              }}
+                              disabled={!hasNext || loadingSqlite}
+                              className="hp-btn hp-btn-outline-ink h-6 px-2 text-[11px] flex items-center gap-0.5 bg-white disabled:opacity-40"
+                            >
+                              <span>Siguiente</span>
+                              <ChevronRight className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
                   <div className="p-10 text-center text-xs text-slate-500 bg-[#fbfbfb] border border-dashed border-[#dcdcdc] rounded-[6px] space-y-3">
                     <p className="font-semibold text-[#1a1a1a]">
                       No hay datos SQLite disponibles actualmente para {selectedSubReport}.
@@ -1834,7 +2105,8 @@ export function ConversionView({ externalLogs = [] }) {
                   </div>
                 )}
               </div>
-            ) : (
+              );
+            })() : (
               <div className="space-y-4">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-[#f7f7f7] p-3.5 rounded-[6px] border border-[#e8e8e8]">
                   <div className="flex flex-wrap items-center gap-2">
@@ -1995,7 +2267,11 @@ export function ConversionView({ externalLogs = [] }) {
 
   const handleDeployConversion = async () => {
     if (!sshPass) {
-      alert("Por favor introduce la contraseña del servidor SSH.");
+      setToast({
+        type: "warning",
+        title: "Contraseña Requerida",
+        message: "Por favor introduce la contraseña del servidor SSH.",
+      });
       return;
     }
     setDeploying(true);
@@ -2028,7 +2304,11 @@ export function ConversionView({ externalLogs = [] }) {
 
   const handleTriggerConversionDag = async () => {
     if (!sshPass) {
-      alert("Por favor introduce la contraseña del servidor SSH para conectar.");
+      setToast({
+        type: "warning",
+        title: "Contraseña Requerida",
+        message: "Por favor introduce la contraseña del servidor SSH para conectar.",
+      });
       return;
     }
     setTriggeringDag(true);
@@ -2257,7 +2537,11 @@ export function ConversionView({ externalLogs = [] }) {
                   const isChecked = selectedReviewCols.includes(col);
                   const handleDeployConversion = async () => {
     if (!sshPass) {
-      alert("Por favor introduce la contraseña del servidor SSH.");
+      setToast({
+        type: "warning",
+        title: "Contraseña Requerida",
+        message: "Por favor introduce la contraseña del servidor SSH.",
+      });
       return;
     }
     setDeploying(true);
@@ -2290,7 +2574,11 @@ export function ConversionView({ externalLogs = [] }) {
 
   const handleTriggerConversionDag = async () => {
     if (!sshPass) {
-      alert("Por favor introduce la contraseña del servidor SSH para conectar.");
+      setToast({
+        type: "warning",
+        title: "Contraseña Requerida",
+        message: "Por favor introduce la contraseña del servidor SSH para conectar.",
+      });
       return;
     }
     setTriggeringDag(true);
@@ -2727,9 +3015,28 @@ export function ConversionView({ externalLogs = [] }) {
             )}
           </div>
 
-          <TerminalLogs logs={[...externalLogs, ...localLogs]} title="Conversion Deploy & Airflow Console" />
+          <TerminalLogs
+            logs={[...externalLogs, ...localLogs]}
+            onClear={() => {
+              setLocalLogs([]);
+              if (onClearLogs) onClearLogs();
+            }}
+            title="Conversion Deploy & Airflow Console"
+          />
         </div>
       )}
+
+      {/* Confirm Dialog Modal */}
+      <ConfirmModal
+        isOpen={!!confirmDialog}
+        title={confirmDialog?.title}
+        message={confirmDialog?.message}
+        confirmText={confirmDialog?.confirmText}
+        variant={confirmDialog?.variant}
+        loading={confirmLoading}
+        onConfirm={confirmDialog?.onConfirm}
+        onCancel={() => !confirmLoading && setConfirmDialog(null)}
+      />
 
       {/* Modern Toast Notification */}
       <Toast toast={toast} onClose={() => setToast(null)} />

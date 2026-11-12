@@ -599,7 +599,7 @@ async def run_batch_tests(req: BatchTestRequest):
 
 
 @router.get("/sqlite-data/{code}")
-def get_sqlite(code: str, limit: int = 100):
+def get_sqlite(code: str, limit: int = 100, offset: int = 0):
     cfg = get_current_config()
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     output_dir = os.path.join(root_dir, "output")
@@ -660,7 +660,12 @@ def get_sqlite(code: str, limit: int = 100):
         cur.execute(f"SELECT COUNT(*) FROM [{target_table}];")
         total_count = cur.fetchone()[0]
 
-        query = f"SELECT * FROM [{target_table}] LIMIT {limit};"
+        safe_limit = int(limit) if limit is not None else 100
+        safe_offset = max(0, int(offset) if offset is not None else 0)
+        if safe_limit > 0:
+            query = f"SELECT * FROM [{target_table}] LIMIT {safe_limit} OFFSET {safe_offset};"
+        else:
+            query = f"SELECT * FROM [{target_table}];"
         df = pd.read_sql_query(query, conn)
 
         # Check columns_to_review
@@ -704,6 +709,8 @@ def get_sqlite(code: str, limit: int = 100):
             "columns": list(df.columns),
             "data": clean_data,
             "total": total_count,
+            "limit": safe_limit,
+            "offset": safe_offset,
             "path": sqlite_file,
             "table": target_table,
             "tables": tables,

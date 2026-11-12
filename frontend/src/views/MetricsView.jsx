@@ -17,8 +17,10 @@ import {
 } from "lucide-react";
 import { api } from "../services/api";
 import { Badge } from "../components/ui/Badge";
+import { Toast } from "../components/ui/Toast";
 
 export function MetricsView() {
+  const [toast, setToast] = useState(null);
   const [period, setPeriod] = useState("7d"); // "hoy", "7d", "30d", "custom"
   const [onlyFullPipeline, setOnlyFullPipeline] = useState(true); // Default to full pipeline (100% completed)
   const [customStart, setCustomStart] = useState("");
@@ -74,7 +76,11 @@ export function MetricsView() {
 
   const handleApplyCustom = () => {
     if (!customStart) {
-      alert("Por favor selecciona una fecha de inicio.");
+      setToast({
+        type: "warning",
+        title: "Fecha Requerida",
+        message: "Por favor selecciona una fecha de inicio.",
+      });
       return;
     }
     loadMetrics("custom", customStart, customEnd, onlyFullPipeline);
@@ -116,9 +122,33 @@ export function MetricsView() {
     document.body.removeChild(link);
   };
 
-  const handleCopyJson = () => {
-    navigator.clipboard.writeText(JSON.stringify(metricsData, null, 2));
-    alert("Datos copiados al portapapeles en formato JSON!");
+  const handleCopyJson = async () => {
+    const jsonText = JSON.stringify(metricsData, null, 2);
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(jsonText);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = jsonText;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setToast({
+        type: "success",
+        title: "Copiado al Portapapeles",
+        message: "Datos copiados al portapapeles en formato JSON.",
+      });
+    } catch (e) {
+      setToast({
+        type: "error",
+        title: "Error al Copiar",
+        message: "No se pudo copiar al portapapeles.",
+      });
+    }
   };
 
   // Filtered rows by search query
@@ -463,6 +493,8 @@ export function MetricsView() {
           </table>
         </div>
       </div>
+
+      <Toast toast={toast} onClose={() => setToast(null)} />
     </div>
   );
 }
